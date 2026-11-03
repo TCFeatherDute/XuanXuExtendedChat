@@ -93,7 +93,10 @@ public final class ChatHistoryStore {
                     String sender = obj.has("sender") ? obj.get("sender").getAsString() : "";
                     long ts = obj.has("ts") ? obj.get("ts").getAsLong() : 0L;
                     boolean self = obj.has("self") && obj.get("self").getAsBoolean();
-                    list.add(new ChatMessage(null, sender, Component.literal(text), text, ts, self));
+                    boolean system = obj.has("system") && obj.get("system").getAsBoolean();
+                    int repeat = obj.has("repeat") ? obj.get("repeat").getAsInt() : 1;
+                    list.add(new ChatMessage(null, sender, entry.getKey(), Component.literal(text),
+                            text, ts, self, system, Math.max(1, repeat)));
                 }
                 result.put(entry.getKey(), list);
             }
@@ -131,6 +134,8 @@ public final class ChatHistoryStore {
                     obj.addProperty("text", message.plainText());
                     obj.addProperty("ts", message.timestamp());
                     obj.addProperty("self", message.self());
+                    obj.addProperty("system", message.system());
+                    obj.addProperty("repeat", message.repeatCount());
                     array.add(obj);
                 }
                 root.add(entry.getKey(), array);
