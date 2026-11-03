@@ -1,4 +1,6 @@
-# 玄虚扩展 - TC的多人聊天革新
+# XuanXu Extended — TC's Multiplayer Chat Revolution
+
+> 玄虚扩展 - TC的多人聊天革新
 
 以聊天 App 风格重铸 Minecraft 原版聊天界面。
 
