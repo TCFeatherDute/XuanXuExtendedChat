@@ -8,7 +8,6 @@ import com.tc.xuanxuchat.PlayerHeadAction;
 import com.tc.xuanxuchat.PlayerHeadActions;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
-import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.multiplayer.PlayerInfo;
@@ -80,6 +79,12 @@ public class XuanXuChatScreen extends Screen {
     private List<PlayerInfo> cachedPlayers = List.of();
     private int lastSeenMessageCount;
 
+    /** 自绘扁平按钮（替代原版 Button，界面更现代）。 */
+    private final List<FlatButton> flatButtons = new ArrayList<>();
+
+    private record FlatButton(int x, int y, int w, int h, Component label, Runnable action) {
+    }
+
     public XuanXuChatScreen(String initialText) {
         super(Component.literal("玄墟聊天"));
         this.initialText = initialText == null ? "" : initialText;
@@ -96,54 +101,51 @@ public class XuanXuChatScreen extends Screen {
 
         int barY = this.height - MARGIN - BAR_HEIGHT;
         int barX = SIDEBAR_WIDTH + MARGIN;
+        this.flatButtons.clear();
 
         // 搜索框（侧边栏顶部）
         this.searchBox = new EditBox(this.font, MARGIN, MARGIN + 14, SIDEBAR_WIDTH - MARGIN * 2, 16,
                 Component.literal("搜索消息..."));
         this.searchBox.setMaxLength(32);
+        this.searchBox.setBordered(false);
         addRenderableWidget(this.searchBox);
 
         // 工具栏：表情
-        addRenderableWidget(Button.builder(Component.literal("☺"), b -> this.emojiOpen = !this.emojiOpen)
-                .bounds(barX, barY, 22, BAR_HEIGHT)
-                .build());
+        addFlatButton(barX, barY, 24, BAR_HEIGHT, Component.literal("☺"),
+                () -> this.emojiOpen = !this.emojiOpen);
 
         // 工具栏：图片（从剪贴板粘贴图片链接发送）
-        addRenderableWidget(Button.builder(Component.literal("图"), b -> insertClipboardImage())
-                .bounds(barX + 24, barY, 22, BAR_HEIGHT)
-                .build());
+        addFlatButton(barX + 28, barY, 24, BAR_HEIGHT, Component.literal("图"),
+                this::insertClipboardImage);
 
-        // 聊天输入框
-        int inputX = barX + 50;
-        int inputWidth = Math.max(80, this.width - inputX - MARGIN - 48);
+        // 聊天输入框（去掉原版边框，自绘扁平背景）
+        int inputX = barX + 58;
+        int inputWidth = Math.max(80, this.width - inputX - MARGIN - 52);
         this.input = new EditBox(this.font, inputX, barY, inputWidth, BAR_HEIGHT,
                 Component.literal("输入消息..."));
         this.input.setValue(this.initialText);
         this.input.setMaxLength(256);
         this.input.setFocused(true);
+        this.input.setBordered(false);
         addRenderableWidget(this.input);
         setInitialFocus(this.input);
 
         // 发送按钮
-        addRenderableWidget(Button.builder(Component.literal("发送"),
-                        b -> sendMessage(this.input.getValue()))
-                .bounds(this.width - MARGIN - 44, barY, 44, BAR_HEIGHT)
-                .build());
+        addFlatButton(this.width - MARGIN - 48, barY, 48, BAR_HEIGHT, Component.literal("发送"),
+                () -> sendMessage(this.input.getValue()));
 
         // 主题切换（侧边栏底部）
-        addRenderableWidget(Button.builder(
-                        Component.literal(this.theme.dark() ? "浅色" : "深色"),
-                        b -> {
-                            String draft = this.input != null ? this.input.getValue() : "";
-                            this.theme = this.theme.toggle();
-                            this.rebuildWidgets();
-                            if (this.input != null) {
-                                this.input.setValue(draft);
-                                this.input.setFocused(true);
-                            }
-                        })
-                .bounds(MARGIN, barY, 40, BAR_HEIGHT)
-                .build());
+        addFlatButton(MARGIN, barY, 44, BAR_HEIGHT,
+                Component.literal(this.theme.dark() ? "浅色" : "深色"),
+                () -> {
+                    String draft = this.input != null ? this.input.getValue() : "";
+                    this.theme = this.theme.toggle();
+                    this.rebuildWidgets();
+                    if (this.input != null) {
+                        this.input.setValue(draft);
+                        this.input.setFocused(true);
+                    }
+                });
     }
 
     /**
@@ -156,8 +158,8 @@ public class XuanXuChatScreen extends Screen {
             this.input.insertText(clip);
             this.input.setFocused(true);
         } else if (this.minecraft != null && this.minecraft.player != null) {
-            this.minecraft.player.displayClientMessage(
-                    Component.literal("请先在浏览器右键复制图片链接，再点「图」按钮"), true);
+            // 动作栏文字要短，太长显示不全
+            this.minecraft.player.displayClientMessage(Component.literal("先复制图片链接再点「图」"), true);
         }
     }
 
@@ -177,6 +179,7 @@ public class XuanXuChatScreen extends Screen {
         renderSidebar(guiGraphics, mouseX, mouseY);
         renderMessages(guiGraphics, mouseX, mouseY);
         renderInputBar(guiGraphics);
+        renderFlatButtons(guiGraphics, mouseX, mouseY);
 
         for (var renderable : this.renderables) {
             renderable.render(guiGraphics, mouseX, mouseY, partialTick);
@@ -510,6 +513,18 @@ public class XuanXuChatScreen extends Screen {
     private void renderInputBar(GuiGraphics guiGraphics) {
         int y = this.height - MARGIN - BAR_HEIGHT;
         guiGraphics.fill(SIDEBAR_WIDTH, y - 4, this.width, this.height, this.theme.panel());
+        // 输入框背景（EditBox 已设为无边框，这里自绘扁平底色）
+        if (this.input != null) {
+            guiGraphics.fill(this.input.getX() - 4, this.input.getY() - 1,
+                    this.input.getX() + this.input.getWidth() + 4, this.input.getY() + this.input.getHeight() + 1,
+                    this.theme.inputBg());
+        }
+        if (this.searchBox != null) {
+            guiGraphics.fill(this.searchBox.getX() - 3, this.searchBox.getY() - 1,
+                    this.searchBox.getX() + this.searchBox.getWidth() + 3,
+                    this.searchBox.getY() + this.searchBox.getHeight() + 1,
+                    this.theme.inputBg());
+        }
     }
 
     // ==================== @ 补全 ====================
@@ -760,6 +775,36 @@ public class XuanXuChatScreen extends Screen {
         return findPlayer(name) != null;
     }
 
+    // ==================== 自绘扁平按钮 ====================
+
+    private void addFlatButton(int x, int y, int w, int h, Component label, Runnable action) {
+        this.flatButtons.add(new FlatButton(x, y, w, h, label, action));
+    }
+
+    private void renderFlatButtons(GuiGraphics guiGraphics, int mouseX, int mouseY) {
+        for (FlatButton button : this.flatButtons) {
+            boolean hover = isInside(mouseX, mouseY, button.x(), button.y(), button.w(), button.h());
+            int background = hover ? this.theme.buttonHover() : this.theme.buttonBg();
+            guiGraphics.fill(button.x(), button.y(), button.x() + button.w(), button.y() + button.h(), background);
+
+            int border = this.theme.buttonBorder();
+            guiGraphics.fill(button.x(), button.y(), button.x() + button.w(), button.y() + 1, border);
+            guiGraphics.fill(button.x(), button.y() + button.h() - 1, button.x() + button.w(), button.y() + button.h(), border);
+            guiGraphics.fill(button.x(), button.y(), button.x() + 1, button.y() + button.h(), border);
+            guiGraphics.fill(button.x() + button.w() - 1, button.y(), button.x() + button.w(), button.y() + button.h(), border);
+
+            int textWidth = this.font.width(button.label());
+            guiGraphics.drawString(this.font, button.label(),
+                    button.x() + (button.w() - textWidth) / 2,
+                    button.y() + (button.h() - 8) / 2,
+                    hover ? this.theme.accent() : this.theme.textPrimary());
+        }
+    }
+
+    private boolean isInside(double mouseX, double mouseY, int x, int y, int w, int h) {
+        return mouseX >= x && mouseX < x + w && mouseY >= y && mouseY < y + h;
+    }
+
     // ==================== 交互 ====================
 
     @Override
@@ -773,6 +818,14 @@ public class XuanXuChatScreen extends Screen {
             }
             this.emojiOpen = false;
             return true;
+        }
+
+        // 自绘按钮
+        for (FlatButton flatButton : this.flatButtons) {
+            if (isInside(mouseX, mouseY, flatButton.x(), flatButton.y(), flatButton.w(), flatButton.h())) {
+                flatButton.action().run();
+                return true;
+            }
         }
 
         // @ 补全

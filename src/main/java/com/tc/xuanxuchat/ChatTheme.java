@@ -14,7 +14,11 @@ public record ChatTheme(
         int bubbleSelf,
         int textPrimary,
         int textSecondary,
-        int accent
+        int accent,
+        int buttonBg,
+        int buttonHover,
+        int buttonBorder,
+        int inputBg
 ) {
     public static final ChatTheme DARK = new ChatTheme(
             true,
@@ -25,7 +29,11 @@ public record ChatTheme(
             0xFF3A64C8,   // 自己消息气泡
             0xFFFFFFFF,   // 主要文字
             0xFF9A9AB0,   // 次要文字
-            0xFF55AAFF    // 强调色（名字 / 选中高亮）
+            0xFF55AAFF,   // 强调色（名字 / 选中高亮）
+            0xFF2B2B3A,   // 按钮底色
+            0xFF3B3B52,   // 按钮悬停
+            0xFF454560,   // 按钮描边
+            0xFF22222E    // 输入框底色
     );
 
     public static final ChatTheme LIGHT = new ChatTheme(
@@ -37,7 +45,11 @@ public record ChatTheme(
             0xFFA8C8FF,
             0xFF1F1F26,
             0xFF6E6E80,
-            0xFF3A64C8
+            0xFF3A64C8,
+            0xFFEDEDF4,
+            0xFFDDE1EE,
+            0xFFC6CBDA,
+            0xFFFFFFFF
     );
 
     public ChatTheme toggle() {
