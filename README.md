@@ -1,4 +1,4 @@
-# 玄墟聊天 (XuanXu Chat)
+# 玄虚扩展 - TC的多人聊天革新
 
 以聊天 App 风格重铸 Minecraft 原版聊天界面。
 
