@@ -1,5 +1,6 @@
 package com.tc.xuanxuchat.client;
 
+import com.tc.xuanxuchat.ChatEmojiLoader;
 import com.tc.xuanxuchat.ChatHub;
 import com.tc.xuanxuchat.ChatImageCache;
 import com.tc.xuanxuchat.ChatMessage;
@@ -102,6 +103,10 @@ public class XuanXuChatScreen extends Screen {
 
     private String hintText;
     private long hintUntil;
+
+    /** 拖动调整窗口大小：0 无 / 1 右边缘 / 2 下边缘 / 3 右下角。 */
+    private int resizeMode;
+    private boolean resizing;
 
     private record FlatButton(int x, int y, int w, int h, Component label, Runnable action) {
     }
@@ -244,6 +249,16 @@ public class XuanXuChatScreen extends Screen {
         }
         if (this.messageMenuTarget != null) {
             renderMessageMenu(guiGraphics, mouseX, mouseY);
+        }
+        // 可拖动边缘高亮提示
+        int edge = edgeAt(mouseX, mouseY);
+        if (edge == 1 || edge == 3) {
+            guiGraphics.fill(this.panelX + this.panelW - 1, this.panelY,
+                    this.panelX + this.panelW, this.panelY + this.panelH, this.theme.accent());
+        }
+        if (edge == 2 || edge == 3) {
+            guiGraphics.fill(this.panelX, this.panelY + this.panelH - 1,
+                    this.panelX + this.panelW, this.panelY + this.panelH, this.theme.accent());
         }
         renderHint(guiGraphics);
     }
@@ -435,6 +450,10 @@ public class XuanXuChatScreen extends Screen {
             int lines = this.font.split(message.content(), maxWidth).size();
             return lines * LINE + 12;
         }
+        // 自定义表情消息：固定高度
+        if (customEmojiName(message.plainText()) != null) {
+            return 24 + 14;
+        }
         int maxWidth = Math.max(40, areaW - AVATAR - 40);
         int lines = this.font.split(message.content(), maxWidth).size();
         int bubbleHeight = lines * LINE + BUBBLE_PAD * 2;
@@ -510,9 +529,18 @@ public class XuanXuChatScreen extends Screen {
         }
     }
 
-    /** 绘制气泡文字：纯 emoji 消息绘制成黄豆表情。 */
+    /** 绘制气泡文字：自定义表情图片 / 内置黄豆表情 / 普通文字。 */
     private void drawBubbleContent(GuiGraphics guiGraphics, ChatMessage message,
                                    List<FormattedCharSequence> lines, int x, int y, int color) {
+        String emojiName = customEmojiName(message.plainText());
+        if (emojiName != null) {
+            ChatEmojiLoader.EmojiEntry entry = ChatEmojiLoader.find(emojiName);
+            if (entry != null) {
+                guiGraphics.blit(entry.location(), x, y, 24, 24, 0, 0,
+                        entry.width(), entry.height(), entry.width(), entry.height());
+                return;
+            }
+        }
         if (isPureEmoji(message.plainText())) {
             Face face = faceOf(message.plainText());
             if (face != null) {
@@ -525,6 +553,20 @@ public class XuanXuChatScreen extends Screen {
             guiGraphics.drawString(this.font, line, x, ty, color);
             ty += LINE;
         }
+    }
+
+    /** 检测整条消息是否为自定义表情代码（:name:）。 */
+    private String customEmojiName(String text) {
+        if (text == null || text.length() < 3) {
+            return null;
+        }
+        if (text.charAt(0) == ':' && text.charAt(text.length() - 1) == ':') {
+            String name = text.substring(1, text.length() - 1);
+            if (name.matches("[\\w-]+")) {
+                return name;
+            }
+        }
+        return null;
     }
 
     /** 系统消息头像：灰色方块 + 感叹号。 */
@@ -564,16 +606,34 @@ public class XuanXuChatScreen extends Screen {
     // ==================== QQ 黄豆表情 ====================
 
     /**
-     * 表情面板：前 8 格是绘制的黄豆表情，后面是颜文字。
+     * 表情面板：优先显示用户放在 xuanxuchat/emojis/ 下的自定义表情图片，
+     * 没有自定义表情时显示内置黄豆表情 + 颜文字。
      */
     private void renderEmojiPanel(GuiGraphics guiGraphics, int mouseX, int mouseY) {
+        List<ChatEmojiLoader.EmojiEntry> custom = ChatEmojiLoader.emojis();
         int columns = 4;
-        int rows = 4;
+        int slots = custom.isEmpty() ? Face.values().length + KAOMOJI.size() : custom.size();
+        int rows = Math.max(1, (slots + columns - 1) / columns);
         int panelWidth = columns * EMOJI_CELL + 8;
         int panelHeight = rows * EMOJI_CELL + 8;
-        int x = this.panelX + this.panelW - panelWidth - MARGIN;
+        int x = this.panelX + SIDEBAR_WIDTH + MARGIN;
         int y = this.panelY + this.panelH - MARGIN - BAR_HEIGHT - panelHeight - 4;
         guiGraphics.fill(x, y, x + panelWidth, y + panelHeight, 0xF0202028);
+
+        if (!custom.isEmpty()) {
+            for (int i = 0; i < custom.size(); i++) {
+                int cx = x + 4 + (i % columns) * EMOJI_CELL;
+                int cy = y + 4 + (i / columns) * EMOJI_CELL;
+                boolean hover = isInside(mouseX, mouseY, cx, cy, EMOJI_CELL - 4, EMOJI_CELL - 4);
+                if (hover) {
+                    guiGraphics.fill(cx, cy, cx + EMOJI_CELL - 4, cy + EMOJI_CELL - 4, 0x40FFFFFF);
+                }
+                ChatEmojiLoader.EmojiEntry entry = custom.get(i);
+                guiGraphics.blit(entry.location(), cx + 2, cy + 2, 24, 24, 0, 0,
+                        entry.width(), entry.height(), entry.width(), entry.height());
+            }
+            return;
+        }
 
         Face[] faces = Face.values();
         for (int i = 0; i < faces.length; i++) {
@@ -585,7 +645,6 @@ public class XuanXuChatScreen extends Screen {
             }
             drawFace(guiGraphics, cx + 3, cy + 3, EMOJI_CELL - 10, faces[i]);
         }
-        // 颜文字（跟在表情后面）
         for (int k = 0; k < KAOMOJI.size(); k++) {
             int index = faces.length + k;
             int cx = x + 4 + (index % columns) * EMOJI_CELL;
@@ -598,14 +657,27 @@ public class XuanXuChatScreen extends Screen {
         }
     }
 
-    /** 返回点击到的表情内容（emoji 字符串或颜文字），没有则 null。 */
+    /** 返回点击到的表情内容，没有则 null。 */
     private String emojiAt(double mouseX, double mouseY) {
+        List<ChatEmojiLoader.EmojiEntry> custom = ChatEmojiLoader.emojis();
         int columns = 4;
-        int rows = 4;
+        int slots = custom.isEmpty() ? Face.values().length + KAOMOJI.size() : custom.size();
+        int rows = Math.max(1, (slots + columns - 1) / columns);
         int panelWidth = columns * EMOJI_CELL + 8;
         int panelHeight = rows * EMOJI_CELL + 8;
-        int x = this.panelX + this.panelW - panelWidth - MARGIN;
+        int x = this.panelX + SIDEBAR_WIDTH + MARGIN;
         int y = this.panelY + this.panelH - MARGIN - BAR_HEIGHT - panelHeight - 4;
+
+        if (!custom.isEmpty()) {
+            for (int i = 0; i < custom.size(); i++) {
+                int cx = x + 4 + (i % columns) * EMOJI_CELL;
+                int cy = y + 4 + (i / columns) * EMOJI_CELL;
+                if (isInside(mouseX, mouseY, cx, cy, EMOJI_CELL - 4, EMOJI_CELL - 4)) {
+                    return ":" + custom.get(i).name() + ":";
+                }
+            }
+            return null;
+        }
 
         Face[] faces = Face.values();
         for (int i = 0; i < faces.length; i++) {
@@ -942,17 +1014,30 @@ public class XuanXuChatScreen extends Screen {
         for (FlatButton button : this.flatButtons) {
             boolean hover = isInside(mouseX, mouseY, button.x(), button.y(), button.w(), button.h());
             int background = hover ? this.theme.buttonHover() : this.theme.buttonBg();
-            guiGraphics.fill(button.x(), button.y(), button.x() + button.w(), button.y() + button.h(), background);
-            int border = this.theme.buttonBorder();
-            guiGraphics.fill(button.x(), button.y(), button.x() + button.w(), button.y() + 1, border);
-            guiGraphics.fill(button.x(), button.y() + button.h() - 1, button.x() + button.w(), button.y() + button.h(), border);
-            guiGraphics.fill(button.x(), button.y(), button.x() + 1, button.y() + button.h(), border);
-            guiGraphics.fill(button.x() + button.w() - 1, button.y(), button.x() + button.w(), button.y() + button.h(), border);
+            // QQ 风格圆角按钮
+            fillRoundedRect(guiGraphics, button.x(), button.y(), button.w(), button.h(), 5, background);
             int textWidth = this.font.width(button.label());
             guiGraphics.drawString(this.font, button.label(),
                     button.x() + (button.w() - textWidth) / 2,
                     button.y() + (button.h() - 8) / 2,
                     hover ? this.theme.accent() : this.theme.textPrimary());
+        }
+    }
+
+    /** 绘制圆角矩形（逐行内缩近似）。 */
+    private void fillRoundedRect(GuiGraphics guiGraphics, int x, int y, int w, int h, int radius, int color) {
+        int r = Math.max(0, Math.min(radius, Math.min(w, h) / 2));
+        for (int dy = 0; dy < h; dy++) {
+            int inset;
+            if (dy < r) {
+                inset = r - (int) Math.sqrt((double) (r * r - (r - dy) * (r - dy)));
+            } else if (dy >= h - r) {
+                int d = dy - (h - r - 1);
+                inset = r - (int) Math.sqrt((double) (r * r - d * d));
+            } else {
+                inset = 0;
+            }
+            guiGraphics.fill(x + inset, y + dy, x + w - inset, y + dy + 1, color);
         }
     }
 
@@ -962,8 +1047,62 @@ public class XuanXuChatScreen extends Screen {
 
     // ==================== 交互 ====================
 
+    /** 检测鼠标是否在窗口可拖动边缘上（0 无 / 1 右边缘 / 2 下边缘 / 3 右下角）。 */
+    private int edgeAt(double mouseX, double mouseY) {
+        int tolerance = 5;
+        boolean right = Math.abs(mouseX - (this.panelX + this.panelW)) <= tolerance;
+        boolean bottom = Math.abs(mouseY - (this.panelY + this.panelH)) <= tolerance;
+        boolean withinX = mouseX >= this.panelX - tolerance && mouseX <= this.panelX + this.panelW + tolerance;
+        boolean withinY = mouseY >= this.panelY - tolerance && mouseY <= this.panelY + this.panelH + tolerance;
+        if (!withinX || !withinY) {
+            return 0;
+        }
+        if (right && bottom) {
+            return 3;
+        }
+        return right ? 1 : (bottom ? 2 : 0);
+    }
+
+    @Override
+    public boolean mouseDragged(double mouseX, double mouseY, int button, double dragX, double dragY) {
+        if (this.resizing) {
+            if (this.resizeMode == 1 || this.resizeMode == 3) {
+                int maxW = this.width - this.panelX;
+                this.panelW = Math.max(320, Math.min(maxW, (int) mouseX - this.panelX));
+            }
+            if (this.resizeMode == 2 || this.resizeMode == 3) {
+                int maxH = this.height - this.panelY;
+                this.panelH = Math.max(240, Math.min(maxH, (int) mouseY - this.panelY));
+            }
+            return true;
+        }
+        return super.mouseDragged(mouseX, mouseY, button, dragX, dragY);
+    }
+
+    @Override
+    public boolean mouseReleased(double mouseX, double mouseY, int button) {
+        if (this.resizing) {
+            this.resizing = false;
+            this.resizeMode = 0;
+            // 适配新尺寸重建控件（输入框位置等）
+            this.rebuildWidgets();
+            return true;
+        }
+        return super.mouseReleased(mouseX, mouseY, button);
+    }
+
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        // 拖动边框调整窗口大小（左键）
+        if (button == 0) {
+            int edge = edgeAt(mouseX, mouseY);
+            if (edge > 0) {
+                this.resizing = true;
+                this.resizeMode = edge;
+                return true;
+            }
+        }
+
         if (this.emojiOpen) {
             String emoji = emojiAt(mouseX, mouseY);
             if (emoji != null) {
