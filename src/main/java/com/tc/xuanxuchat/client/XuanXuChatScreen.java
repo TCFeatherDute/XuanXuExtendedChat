@@ -94,7 +94,8 @@ public class XuanXuChatScreen extends Screen {
         this.cachedPlayers = collectOnlinePlayers();
         this.lastSeenMessageCount = ChatHub.messages(this.conversation).size();
 
-        int inputY = this.height - MARGIN - BAR_HEIGHT;
+        int barY = this.height - MARGIN - BAR_HEIGHT;
+        int barX = SIDEBAR_WIDTH + MARGIN;
 
         // 搜索框（侧边栏顶部）
         this.searchBox = new EditBox(this.font, MARGIN, MARGIN + 14, SIDEBAR_WIDTH - MARGIN * 2, 16,
@@ -102,10 +103,20 @@ public class XuanXuChatScreen extends Screen {
         this.searchBox.setMaxLength(32);
         addRenderableWidget(this.searchBox);
 
+        // 工具栏：表情
+        addRenderableWidget(Button.builder(Component.literal("☺"), b -> this.emojiOpen = !this.emojiOpen)
+                .bounds(barX, barY, 22, BAR_HEIGHT)
+                .build());
+
+        // 工具栏：图片（从剪贴板粘贴图片链接发送）
+        addRenderableWidget(Button.builder(Component.literal("图"), b -> insertClipboardImage())
+                .bounds(barX + 24, barY, 22, BAR_HEIGHT)
+                .build());
+
         // 聊天输入框
-        this.input = new EditBox(this.font,
-                SIDEBAR_WIDTH + MARGIN + 4, inputY,
-                this.width - SIDEBAR_WIDTH - MARGIN * 3 - 104, BAR_HEIGHT,
+        int inputX = barX + 50;
+        int inputWidth = Math.max(80, this.width - inputX - MARGIN - 48);
+        this.input = new EditBox(this.font, inputX, barY, inputWidth, BAR_HEIGHT,
                 Component.literal("输入消息..."));
         this.input.setValue(this.initialText);
         this.input.setMaxLength(256);
@@ -113,12 +124,13 @@ public class XuanXuChatScreen extends Screen {
         addRenderableWidget(this.input);
         setInitialFocus(this.input);
 
-        // 表情按钮
-        addRenderableWidget(Button.builder(Component.literal("☺"), b -> this.emojiOpen = !this.emojiOpen)
-                .bounds(this.width - MARGIN - 36, inputY, 36, BAR_HEIGHT)
+        // 发送按钮
+        addRenderableWidget(Button.builder(Component.literal("发送"),
+                        b -> sendMessage(this.input.getValue()))
+                .bounds(this.width - MARGIN - 44, barY, 44, BAR_HEIGHT)
                 .build());
 
-        // 主题切换
+        // 主题切换（侧边栏底部）
         addRenderableWidget(Button.builder(
                         Component.literal(this.theme.dark() ? "浅色" : "深色"),
                         b -> {
@@ -130,8 +142,23 @@ public class XuanXuChatScreen extends Screen {
                                 this.input.setFocused(true);
                             }
                         })
-                .bounds(MARGIN, inputY, 40, BAR_HEIGHT)
+                .bounds(MARGIN, barY, 40, BAR_HEIGHT)
                 .build());
+    }
+
+    /**
+     * 从剪贴板读取图片链接并填入输入框（发送图片的入口）。
+     * 用户先在浏览器右键「复制图片地址」，再点「图」按钮即可。
+     */
+    private void insertClipboardImage() {
+        String clip = Minecraft.getInstance().keyboardHandler.getClipboard();
+        if (clip != null && clip.matches("(?i)^https?://\\S+$")) {
+            this.input.insertText(clip);
+            this.input.setFocused(true);
+        } else if (this.minecraft != null && this.minecraft.player != null) {
+            this.minecraft.player.displayClientMessage(
+                    Component.literal("请先在浏览器右键复制图片链接，再点「图」按钮"), true);
+        }
     }
 
     @Override
@@ -579,14 +606,15 @@ public class XuanXuChatScreen extends Screen {
     // ==================== 表情面板 ====================
 
     private void renderEmojiPanel(GuiGraphics guiGraphics, int mouseX, int mouseY) {
-        int panelW = 224;
-        int panelH = 96;
+        int columns = 6;
+        int cell = 34;
+        int rows = (EMOJIS.size() + columns - 1) / columns;
+        int panelW = columns * cell + 8;
+        int panelH = rows * cell + 8;
         int x = this.width - panelW - MARGIN;
         int y = this.height - MARGIN - BAR_HEIGHT - panelH - 4;
         guiGraphics.fill(x, y, x + panelW, y + panelH, 0xF0202028);
 
-        int columns = 6;
-        int cell = 34;
         for (int i = 0; i < EMOJIS.size(); i++) {
             int cx = x + 4 + (i % columns) * cell;
             int cy = y + 4 + (i / columns) * cell;
@@ -599,12 +627,13 @@ public class XuanXuChatScreen extends Screen {
     }
 
     private String emojiAt(double mouseX, double mouseY) {
-        int panelW = 224;
-        int panelH = 96;
-        int x = this.width - panelW - MARGIN;
-        int y = this.height - MARGIN - BAR_HEIGHT - panelH - 4;
         int columns = 6;
         int cell = 34;
+        int rows = (EMOJIS.size() + columns - 1) / columns;
+        int panelW = columns * cell + 8;
+        int panelH = rows * cell + 8;
+        int x = this.width - panelW - MARGIN;
+        int y = this.height - MARGIN - BAR_HEIGHT - panelH - 4;
         for (int i = 0; i < EMOJIS.size(); i++) {
             int cx = x + 4 + (i % columns) * cell;
             int cy = y + 4 + (i / columns) * cell;
