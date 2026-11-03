@@ -39,9 +39,10 @@ public class XuanXuChatScreen extends Screen {
     private static final int BUBBLE_PAD = 6;
     private static final int TIME_SEPARATOR_HEIGHT = 14;
     private static final int EMOJI_CELL = 34;
-
-    /** 窗口大小档位（大 / 中 / 小）。 */
-    private static final float[] SIZE_SCALE = {1.0f, 0.85f, 0.7f};
+    /** 消息气泡内表情的绘制尺寸。 */
+    private static final int EMOJI_SIZE = 18;
+    /** 窗口顶部标题栏高度。 */
+    private static final int TITLE_BAR_HEIGHT = 22;
 
     /** 消息中的图片 / GIF 链接。 */
     private static final Pattern IMAGE_URL =
@@ -72,16 +73,11 @@ public class XuanXuChatScreen extends Screen {
     private final String initialText;
     private ChatTheme theme = ChatTheme.DARK;
 
-    /** 窗口大小档位：0 大 / 1 中 / 2 小。 */
-    private int sizeTier = 1;
-
-    private int panelX;
-    private int panelY;
-    private int panelW;
-    private int panelH;
-
     private EditBox input;
     private EditBox searchBox;
+
+    /** 是否已打开某个会话（false 时右侧只显示提示，点击左侧会话才展开）。 */
+    private boolean conversationOpen;
 
     private String conversation = ChatHub.PUBLIC;
     private double scroll;
@@ -101,12 +97,14 @@ public class XuanXuChatScreen extends Screen {
 
     private final List<FlatButton> flatButtons = new ArrayList<>();
 
+    /** 固定面板区域（屏幕左侧）。 */
+    private int panelX;
+    private int panelY;
+    private int panelW;
+    private int panelH;
+
     private String hintText;
     private long hintUntil;
-
-    /** 拖动调整窗口大小：0 无 / 1 右边缘 / 2 下边缘 / 3 右下角。 */
-    private int resizeMode;
-    private boolean resizing;
 
     private record FlatButton(int x, int y, int w, int h, Component label, Runnable action) {
     }
@@ -130,8 +128,9 @@ public class XuanXuChatScreen extends Screen {
         int barY = this.panelY + this.panelH - MARGIN - BAR_HEIGHT;
         int barX = this.panelX + SIDEBAR_WIDTH + MARGIN;
 
-        // 搜索框（侧边栏顶部）
-        this.searchBox = new EditBox(this.font, this.panelX + MARGIN, this.panelY + MARGIN + 14,
+        // 搜索框（侧边栏顶部，标题栏下方）
+        this.searchBox = new EditBox(this.font, this.panelX + MARGIN,
+                this.panelY + TITLE_BAR_HEIGHT + 6,
                 SIDEBAR_WIDTH - MARGIN * 2, 16, Component.literal("搜索消息..."));
         this.searchBox.setMaxLength(32);
         this.searchBox.setBordered(false);
@@ -145,13 +144,8 @@ public class XuanXuChatScreen extends Screen {
         addFlatButton(barX + 26, barY, 22, BAR_HEIGHT, Component.literal("图"),
                 this::insertClipboardImage);
 
-        // 工具栏：窗口大小
-        addFlatButton(barX + 52, barY, 40, BAR_HEIGHT,
-                Component.literal(sizeLabel()),
-                this::cycleSize);
-
         // 聊天输入框
-        int inputX = barX + 98;
+        int inputX = barX + 58;
         int inputWidth = Math.max(80, this.panelX + this.panelW - MARGIN - 52 - inputX);
         this.input = new EditBox(this.font, inputX, barY, inputWidth, BAR_HEIGHT,
                 Component.literal("输入消息..."));
@@ -159,8 +153,19 @@ public class XuanXuChatScreen extends Screen {
         this.input.setMaxLength(256);
         this.input.setFocused(true);
         this.input.setBordered(false);
+        this.input.setEditable(this.conversationOpen);
         addRenderableWidget(this.input);
         setInitialFocus(this.input);
+
+        // 标题栏右侧：关闭当前会话
+        addFlatButton(this.panelX + this.panelW - MARGIN - 18, this.panelY + 3, 18, 16,
+                Component.literal("×"),
+                () -> {
+                    this.conversationOpen = false;
+                    if (this.input != null) {
+                        this.input.setEditable(false);
+                    }
+                });
 
         // 发送按钮
         addFlatButton(this.panelX + this.panelW - MARGIN - 48, barY, 48, BAR_HEIGHT,
@@ -181,25 +186,11 @@ public class XuanXuChatScreen extends Screen {
                 });
     }
 
-    private String sizeLabel() {
-        return switch (this.sizeTier) {
-            case 0 -> "大";
-            case 1 -> "中";
-            default -> "小";
-        };
-    }
-
-    private void cycleSize() {
-        this.sizeTier = (this.sizeTier + 1) % SIZE_SCALE.length;
-        this.rebuildWidgets();
-    }
-
-    /** 计算窗口面板区域（居中）。 */
+    /** 计算固定面板区域：固定在屏幕左侧，大小适中。 */
     private void computePanel() {
-        float scale = SIZE_SCALE[this.sizeTier];
-        this.panelW = Math.round(this.width * scale);
-        this.panelH = Math.round(this.height * scale);
-        this.panelX = (this.width - this.panelW) / 2;
+        this.panelW = (int) Math.max(480, Math.min(760, this.width * 0.46));
+        this.panelH = (int) Math.min(this.height - 20, Math.max(380, this.height * 0.88));
+        this.panelX = 8;
         this.panelY = (this.height - this.panelH) / 2;
     }
 
@@ -223,12 +214,12 @@ public class XuanXuChatScreen extends Screen {
         }
         updateAtQuery();
 
-        // 窗口外暗化
+        // 屏幕暗化 + 面板背景
         guiGraphics.fill(0, 0, this.width, this.height, 0x80000000);
-        // 面板背景
         guiGraphics.fill(this.panelX, this.panelY,
                 this.panelX + this.panelW, this.panelY + this.panelH, this.theme.background());
 
+        renderTitleBar(guiGraphics);
         renderSidebar(guiGraphics, mouseX, mouseY);
         renderMessages(guiGraphics, mouseX, mouseY);
         renderInputBar(guiGraphics);
@@ -250,17 +241,14 @@ public class XuanXuChatScreen extends Screen {
         if (this.messageMenuTarget != null) {
             renderMessageMenu(guiGraphics, mouseX, mouseY);
         }
-        // 可拖动边缘高亮提示
-        int edge = edgeAt(mouseX, mouseY);
-        if (edge == 1 || edge == 3) {
-            guiGraphics.fill(this.panelX + this.panelW - 1, this.panelY,
-                    this.panelX + this.panelW, this.panelY + this.panelH, this.theme.accent());
-        }
-        if (edge == 2 || edge == 3) {
-            guiGraphics.fill(this.panelX, this.panelY + this.panelH - 1,
-                    this.panelX + this.panelW, this.panelY + this.panelH, this.theme.accent());
-        }
         renderHint(guiGraphics);
+    }
+
+    /** 顶部标题栏。 */
+    private void renderTitleBar(GuiGraphics guiGraphics) {
+        guiGraphics.fill(this.panelX, this.panelY,
+                this.panelX + this.panelW, this.panelY + TITLE_BAR_HEIGHT, this.theme.panelSelected());
+        guiGraphics.drawString(this.font, "玄墟聊天", this.panelX + MARGIN, this.panelY + 7, this.theme.accent());
     }
 
     /** 界面内提示（替代动作栏，避免文字过长显示不全）。 */
@@ -282,8 +270,8 @@ public class XuanXuChatScreen extends Screen {
 
     private void renderSidebar(GuiGraphics guiGraphics, int mouseX, int mouseY) {
         int left = this.panelX;
-        int top = this.panelY;
-        guiGraphics.fill(left, top, left + SIDEBAR_WIDTH, top + this.panelH, this.theme.panel());
+        int top = this.panelY + TITLE_BAR_HEIGHT;
+        guiGraphics.fill(left, top, left + SIDEBAR_WIDTH, this.panelY + this.panelH, this.theme.panel());
         guiGraphics.drawString(this.font, "会话", left + MARGIN, top + MARGIN, this.theme.accent());
 
         int y = top + MARGIN + 34;
@@ -345,7 +333,7 @@ public class XuanXuChatScreen extends Screen {
     }
 
     private int areaY() {
-        return this.panelY + MARGIN;
+        return this.panelY + TITLE_BAR_HEIGHT + MARGIN;
     }
 
     private int areaW() {
@@ -353,7 +341,7 @@ public class XuanXuChatScreen extends Screen {
     }
 
     private int areaH() {
-        return this.panelH - MARGIN * 2 - BAR_HEIGHT - 8;
+        return this.panelH - TITLE_BAR_HEIGHT - MARGIN * 2 - BAR_HEIGHT - 8;
     }
 
     private void renderMessages(GuiGraphics guiGraphics, int mouseX, int mouseY) {
@@ -363,6 +351,16 @@ public class XuanXuChatScreen extends Screen {
         int areaH = areaH();
 
         guiGraphics.fill(areaX, areaY, areaX + areaW, areaY + areaH, 0x30000000);
+
+        // 未打开会话：只显示提示
+        if (!this.conversationOpen) {
+            String hint = "选择左侧会话开始聊天";
+            guiGraphics.drawString(this.font, hint,
+                    areaX + (areaW - this.font.width(hint)) / 2, areaY + areaH / 2,
+                    this.theme.textSecondary());
+            return;
+        }
+
         guiGraphics.enableScissor(areaX, areaY, areaX + areaW, areaY + areaH);
 
         List<ChatMessage> all = ChatHub.messages(this.conversation);
@@ -450,9 +448,9 @@ public class XuanXuChatScreen extends Screen {
             int lines = this.font.split(message.content(), maxWidth).size();
             return lines * LINE + 12;
         }
-        // 自定义表情消息：固定高度
-        if (customEmojiName(message.plainText()) != null) {
-            return 24 + 14;
+        // 纯表情消息：按表情尺寸计算（避免溢出气泡）
+        if (isEmojiMessage(message)) {
+            return LINE + 2 + (EMOJI_SIZE + BUBBLE_PAD * 2) + 8;
         }
         int maxWidth = Math.max(40, areaW - AVATAR - 40);
         int lines = this.font.split(message.content(), maxWidth).size();
@@ -461,11 +459,17 @@ public class XuanXuChatScreen extends Screen {
         if (findImageUrl(message.plainText()) != null) {
             height += imageDisplayHeight(message.plainText()) + 6;
         }
-        // 纯 emoji 消息：绘制大号黄豆表情
-        if (isPureEmoji(message.plainText())) {
-            height = Math.max(height, AVATAR + 20 + 8);
-        }
         return height;
+    }
+
+    /** 是否为可绘制的表情消息（自定义表情或内置黄豆表情）。 */
+    private boolean isEmojiMessage(ChatMessage message) {
+        String text = message.plainText();
+        String name = customEmojiName(text);
+        if (name != null) {
+            return ChatEmojiLoader.find(name) != null;
+        }
+        return isPureEmoji(text) && faceOf(text) != null;
     }
 
     private void drawMessage(GuiGraphics guiGraphics, ChatMessage message, int areaX, int areaY, int areaW) {
@@ -490,12 +494,21 @@ public class XuanXuChatScreen extends Screen {
         int maxWidth = Math.max(40, areaW - AVATAR - 40);
         List<FormattedCharSequence> lines = this.font.split(message.content(), maxWidth);
 
-        int bubbleWidth = 0;
-        for (FormattedCharSequence line : lines) {
-            bubbleWidth = Math.max(bubbleWidth, this.font.width(line));
+        // 纯表情消息：气泡按表情尺寸绘制（避免表情超出气泡）
+        boolean emojiMessage = isEmojiMessage(message);
+        int bubbleWidth;
+        int bubbleHeight;
+        if (emojiMessage) {
+            bubbleWidth = EMOJI_SIZE + BUBBLE_PAD * 2;
+            bubbleHeight = EMOJI_SIZE + BUBBLE_PAD * 2;
+        } else {
+            bubbleWidth = 0;
+            for (FormattedCharSequence line : lines) {
+                bubbleWidth = Math.max(bubbleWidth, this.font.width(line));
+            }
+            bubbleWidth += BUBBLE_PAD * 2;
+            bubbleHeight = lines.size() * LINE + BUBBLE_PAD * 2;
         }
-        bubbleWidth += BUBBLE_PAD * 2;
-        int bubbleHeight = lines.size() * LINE + BUBBLE_PAD * 2;
         int nameY = areaY;
 
         if (message.self()) {
@@ -503,7 +516,8 @@ public class XuanXuChatScreen extends Screen {
             guiGraphics.drawString(this.font, message.senderName(), bubbleX, nameY, this.theme.accent());
             int bubbleY = nameY + LINE + 2;
             guiGraphics.fill(bubbleX, bubbleY, bubbleX + bubbleWidth, bubbleY + bubbleHeight, this.theme.bubbleSelf());
-            drawBubbleContent(guiGraphics, message, lines, bubbleX + BUBBLE_PAD, bubbleY + BUBBLE_PAD, 0xFFFFFFFF);
+            drawBubbleContent(guiGraphics, message, lines, bubbleX + BUBBLE_PAD, bubbleY + BUBBLE_PAD,
+                    this.theme.bubbleSelfText());
             if (message.repeatCount() > 1) {
                 String badge = "x" + message.repeatCount();
                 guiGraphics.drawString(this.font, badge,
@@ -536,7 +550,7 @@ public class XuanXuChatScreen extends Screen {
         if (emojiName != null) {
             ChatEmojiLoader.EmojiEntry entry = ChatEmojiLoader.find(emojiName);
             if (entry != null) {
-                guiGraphics.blit(entry.location(), x, y, 24, 24, 0, 0,
+                guiGraphics.blit(entry.location(), x, y, EMOJI_SIZE, EMOJI_SIZE, 0, 0,
                         entry.width(), entry.height(), entry.width(), entry.height());
                 return;
             }
@@ -544,7 +558,7 @@ public class XuanXuChatScreen extends Screen {
         if (isPureEmoji(message.plainText())) {
             Face face = faceOf(message.plainText());
             if (face != null) {
-                drawFace(guiGraphics, x - 2, y - 2, 24, face);
+                drawFace(guiGraphics, x, y, EMOJI_SIZE, face);
                 return;
             }
         }
@@ -1047,64 +1061,13 @@ public class XuanXuChatScreen extends Screen {
 
     // ==================== 交互 ====================
 
-    /** 检测鼠标是否在窗口可拖动边缘上（0 无 / 1 右边缘 / 2 下边缘 / 3 右下角）。 */
-    private int edgeAt(double mouseX, double mouseY) {
-        int tolerance = 5;
-        boolean right = Math.abs(mouseX - (this.panelX + this.panelW)) <= tolerance;
-        boolean bottom = Math.abs(mouseY - (this.panelY + this.panelH)) <= tolerance;
-        boolean withinX = mouseX >= this.panelX - tolerance && mouseX <= this.panelX + this.panelW + tolerance;
-        boolean withinY = mouseY >= this.panelY - tolerance && mouseY <= this.panelY + this.panelH + tolerance;
-        if (!withinX || !withinY) {
-            return 0;
-        }
-        if (right && bottom) {
-            return 3;
-        }
-        return right ? 1 : (bottom ? 2 : 0);
-    }
-
-    @Override
-    public boolean mouseDragged(double mouseX, double mouseY, int button, double dragX, double dragY) {
-        if (this.resizing) {
-            if (this.resizeMode == 1 || this.resizeMode == 3) {
-                int maxW = this.width - this.panelX;
-                this.panelW = Math.max(320, Math.min(maxW, (int) mouseX - this.panelX));
-            }
-            if (this.resizeMode == 2 || this.resizeMode == 3) {
-                int maxH = this.height - this.panelY;
-                this.panelH = Math.max(240, Math.min(maxH, (int) mouseY - this.panelY));
-            }
-            return true;
-        }
-        return super.mouseDragged(mouseX, mouseY, button, dragX, dragY);
-    }
-
-    @Override
-    public boolean mouseReleased(double mouseX, double mouseY, int button) {
-        if (this.resizing) {
-            this.resizing = false;
-            this.resizeMode = 0;
-            // 适配新尺寸重建控件（输入框位置等）
-            this.rebuildWidgets();
-            return true;
-        }
-        return super.mouseReleased(mouseX, mouseY, button);
-    }
-
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
-        // 拖动边框调整窗口大小（左键）
-        if (button == 0) {
-            int edge = edgeAt(mouseX, mouseY);
-            if (edge > 0) {
-                this.resizing = true;
-                this.resizeMode = edge;
-                return true;
-            }
-        }
+        double vx = mouseX;
+        double vy = mouseY;
 
         if (this.emojiOpen) {
-            String emoji = emojiAt(mouseX, mouseY);
+            String emoji = emojiAt(vx, vy);
             if (emoji != null) {
                 this.input.insertText(emoji);
                 return true;
@@ -1114,18 +1077,18 @@ public class XuanXuChatScreen extends Screen {
         }
 
         for (FlatButton flatButton : this.flatButtons) {
-            if (isInside(mouseX, mouseY, flatButton.x(), flatButton.y(), flatButton.w(), flatButton.h())) {
+            if (isInside(vx, vy, flatButton.x(), flatButton.y(), flatButton.w(), flatButton.h())) {
                 flatButton.action().run();
                 return true;
             }
         }
 
-        if (clickAtCandidate(mouseX, mouseY)) {
+        if (clickAtCandidate(vx, vy)) {
             return true;
         }
 
         if (this.messageMenuTarget != null) {
-            int index = messageMenuItemAt(mouseX, mouseY);
+            int index = messageMenuItemAt(vx, vy);
             if (index >= 0) {
                 handleMessageMenuAction(index);
                 this.messageMenuTarget = null;
@@ -1135,7 +1098,7 @@ public class XuanXuChatScreen extends Screen {
         }
 
         if (this.headMenuPlayer != null) {
-            int index = headMenuItemAt(mouseX, mouseY);
+            int index = headMenuItemAt(vx, vy);
             if (index >= 0) {
                 List<PlayerHeadAction> actions = PlayerHeadActions.visibleFor(this.headMenuPlayer);
                 actions.get(index).execute(this.headMenuPlayer);
@@ -1145,16 +1108,16 @@ public class XuanXuChatScreen extends Screen {
             this.headMenuPlayer = null;
         }
 
-        int sidebarItem = sidebarItemAt(mouseX, mouseY);
+        int sidebarItem = sidebarItemAt(vx, vy);
         if (sidebarItem >= 0) {
             selectSidebarItem(sidebarItem);
             return true;
         }
 
-        ChatMessage messageAt = messageAt(mouseX, mouseY);
+        ChatMessage messageAt = messageAt(vx, vy);
         if (messageAt != null) {
             if (button == 1) {
-                if (isOnAvatar(messageAt, mouseX, mouseY)) {
+                if (isOnAvatar(messageAt, vx, vy)) {
                     this.headMenuPlayer = messageAt.senderName();
                     this.headMenuX = mouseX;
                     this.headMenuY = mouseY;
@@ -1163,7 +1126,7 @@ public class XuanXuChatScreen extends Screen {
                     this.messageMenuX = mouseX;
                     this.messageMenuY = mouseY;
                 }
-            } else if (isOnAvatar(messageAt, mouseX, mouseY)) {
+            } else if (isOnAvatar(messageAt, vx, vy)) {
                 if (!messageAt.self() && !messageAt.system() && !ChatHub.PUBLIC.equals(messageAt.senderName())) {
                     this.conversation = messageAt.senderName();
                     this.scroll = 0;
@@ -1172,7 +1135,7 @@ public class XuanXuChatScreen extends Screen {
             return true;
         }
 
-        return super.mouseClicked(mouseX, mouseY, button);
+        return super.mouseClicked(vx, vy, button);
     }
 
     private void handleMessageMenuAction(int index) {
@@ -1196,7 +1159,7 @@ public class XuanXuChatScreen extends Screen {
         if (mouseX < left || mouseX > left + SIDEBAR_WIDTH) {
             return -1;
         }
-        int y = this.panelY + MARGIN + 34;
+        int y = this.panelY + TITLE_BAR_HEIGHT + MARGIN + 34;
         if (isInside(mouseX, mouseY, left, y, SIDEBAR_WIDTH, 18)) {
             return 0;
         }
@@ -1238,12 +1201,19 @@ public class XuanXuChatScreen extends Screen {
                 this.conversation = offline.get(offset - 1);
             }
         }
+        this.conversationOpen = true;
+        if (this.input != null) {
+            this.input.setEditable(true);
+        }
         this.scroll = 0;
         this.lastSeenMessageCount = ChatHub.messages(this.conversation).size();
         ChatHub.setOpenConversation(this.conversation);
     }
 
     private ChatMessage messageAt(double mouseX, double mouseY) {
+        if (!this.conversationOpen) {
+            return null;
+        }
         int areaX = areaX();
         int areaY = areaY();
         int areaW = areaW();
@@ -1342,6 +1312,10 @@ public class XuanXuChatScreen extends Screen {
     }
 
     private void sendMessage(String text) {
+        if (!this.conversationOpen) {
+            showHint("先选择左侧会话再发送消息");
+            return;
+        }
         if (text == null || text.isBlank()) {
             return;
         }
