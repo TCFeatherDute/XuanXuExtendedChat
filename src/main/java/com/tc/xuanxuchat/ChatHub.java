@@ -236,6 +236,20 @@ public final class ChatHub {
         return List.copyOf(CONVERSATIONS.getOrDefault(conversationKey, List.of()));
     }
 
+    /**
+     * 某会话的最后一条消息（会话列表的预览用），没有则 null。
+     * <p>
+     * 不复制列表，可以放心在渲染循环里每帧调用。
+     */
+    public static ChatMessage lastMessage(String conversationKey) {
+        ensureSessionLoaded();
+        List<ChatMessage> list = CONVERSATIONS.get(conversationKey);
+        if (list == null || list.isEmpty()) {
+            return null;
+        }
+        return list.get(list.size() - 1);
+    }
+
     /** 所有会话键（公共频道固定存在）。 */
     public static Set<String> conversationKeys() {
         ensureSessionLoaded();

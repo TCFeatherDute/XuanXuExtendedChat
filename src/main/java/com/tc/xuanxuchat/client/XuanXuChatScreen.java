@@ -31,16 +31,51 @@ import java.util.regex.Pattern;
  * 右侧消息气泡流（时间分隔、系统头像、图片），底部 QQ 风格工具栏（表情 / 图片 / 发送）。
  */
 public class XuanXuChatScreen extends Screen {
-    private static final int SIDEBAR_WIDTH = 140;
+    /** 最左侧竖排功能导航栏。 */
+    private static final int NAV_WIDTH = 52;
+    /** 导航项行高 / 左右内缩。 */
+    private static final int NAV_ITEM_HEIGHT = 34;
+    private static final int NAV_ITEM_INSET = 6;
+    /** 中间会话列表栏。 */
+    private static final int LIST_WIDTH = 210;
+    private static final int CONVERSATION_ITEM_HEIGHT = 44;
     private static final int MARGIN = 8;
-    private static final int BAR_HEIGHT = 18;
-    /** 侧边栏搜索框高度，以及它相对「会话」标题的下移量。 */
-    private static final int SEARCH_BOX_HEIGHT = 16;
-    private static final int SEARCH_BOX_TOP_OFFSET = 13;
+    /** 输入框 / 发送按钮 / 工具栏行高。 */
+    private static final int INPUT_BAR_HEIGHT = 20;
+    private static final int TOOL_BAR_HEIGHT = 18;
+    private static final int TOOL_GAP = 6;
+    private static final int SEND_BUTTON_WIDTH = 56;
+    /**
+     * 单行文字高度。
+     * <p>
+     * 注意：{@code EditBox} 在 {@code bordered=false} 时把文字画在控件原点
+     * （{@code bordered ? getY() + (height-8)/2 : getY()}），
+     * 所以输入框控件必须自己下移 {@code (框高 - 8) / 2} 才能落在底板中间。
+     */
+    private static final int TEXT_LINE_HEIGHT = 8;
+    /** QQ 蓝发送按钮。 */
+    private static final int SEND_BUTTON_COLOR = 0xFF2F7CF6;
+    private static final int SEND_BUTTON_HOVER = 0xFF4A90FF;
+    /** 会话列表搜索框高度，以及它相对「消息」标题的下移量。 */
+    private static final int SEARCH_BOX_HEIGHT = 18;
+    private static final int SEARCH_BOX_TOP_OFFSET = 15;
     private static final int AVATAR = 16;
+    private static final int LIST_AVATAR = 20;
     private static final int LINE = 9;
     private static final int BUBBLE_PAD = 6;
-    private static final int TIME_SEPARATOR_HEIGHT = 14;
+    /** 消息与消息之间的固定空隙。 */
+    private static final int MESSAGE_GAP = 10;
+    /** 名称行到气泡之间的空隙。 */
+    private static final int NAME_GAP = 2;
+    /** 气泡到消息图片之间的空隙。 */
+    private static final int IMAGE_GAP = 4;
+    /** 时间分隔：上留白 + 文字行 + 下留白，合计为 TIME_SEPARATOR_HEIGHT。 */
+    private static final int TIME_PAD_ABOVE = 8;
+    private static final int TIME_TEXT_HEIGHT = 9;
+    private static final int TIME_PAD_BELOW = 12;
+    private static final int TIME_SEPARATOR_HEIGHT = TIME_PAD_ABOVE + TIME_TEXT_HEIGHT + TIME_PAD_BELOW;
+    /** 导航栏底色（绘制图标镂空时也要用到）。 */
+    private static final int NAV_BG = 0xFF101018;
     private static final int EMOJI_CELL = 34;
     /** 表情面板每行列数、单格图片绘制尺寸。 */
     private static final int EMOJI_COLUMNS = 4;
@@ -50,10 +85,50 @@ public class XuanXuChatScreen extends Screen {
     /** 窗口顶部标题栏高度。 */
     private static final int TITLE_BAR_HEIGHT = 22;
 
+    /** 世界聊天（公共频道）在会话列表里的显示名。 */
+    private static final String WORLD_CHAT_NAME = "世界聊天";
+
     /** 消息中的图片 / GIF 链接。 */
     private static final Pattern IMAGE_URL =
             Pattern.compile("(?i)(https?://\\S+?\\.(?:png|jpe?g|gif|webp)(?:\\?\\S*)?)");
     private static final int IMAGE_DISPLAY_MAX_W = 160;
+
+    /** 左侧功能导航栏的栏目。 */
+    private enum NavTab {
+        MESSAGES("消息"),
+        CONTACTS("联系人"),
+        FAVORITES("收藏"),
+        CHANNELS("频道"),
+        MOMENTS("动态"),
+        APPS("应用"),
+        MORE("更多"),
+        MAIL("邮件"),
+        DEVICES("设备"),
+        MAIN_MENU("主菜单");
+
+        private final String label;
+
+        NavTab(String label) {
+            this.label = label;
+        }
+    }
+
+    /** 输入工具栏的图标。目前只有表情和图片是真功能，其余先占位。 */
+    private enum ToolIcon {
+        EMOJI("表情"),
+        SCREENSHOT("截图"),
+        FILE("传文件"),
+        IMAGE("图片"),
+        RED_PACKET("红包"),
+        VOICE("语音"),
+        SHAKE("震动");
+
+        private final String label;
+
+        ToolIcon(String label) {
+            this.label = label;
+        }
+    }
 
     /** QQ 风格黄豆表情（绘制 + 插入对应的 unicode emoji）。 */
     private enum Face {
@@ -67,9 +142,14 @@ public class XuanXuChatScreen extends Screen {
         }
     }
 
-    /** 颜文字（附在表情面板后面）。 */
+    /**
+     * 颜文字（附在表情面板后面）。
+     * <p>
+     * 只用短的：表情格子只有 {@link #EMOJI_CELL} 宽，长颜文字会溢出到相邻格子。
+     * 另外绘制时还有 {@link #drawScaledString} 兜底，超宽一律等比缩小。
+     */
     private static final List<String> KAOMOJI = List.of(
-            "(＾▽＾)", "(￣▽￣)", "(≧∇≦)", "(´・ω・`)", "(¬‿¬)", "(๑•̀ㅂ•́)و✧"
+            "(^^)", "(^_^)", "(-_-)", "(>_<)", "(T_T)", "(*_*)"
     );
 
     private static final int FACE_YELLOW = 0xFFFFD93D;
@@ -99,6 +179,9 @@ public class XuanXuChatScreen extends Screen {
     private boolean emojiOpen;
     private String atQuery;
 
+    /** 当前选中的左侧导航栏目。 */
+    private NavTab activeTab = NavTab.MESSAGES;
+
     private String headMenuPlayer;
     private double headMenuX;
     private double headMenuY;
@@ -110,6 +193,10 @@ public class XuanXuChatScreen extends Screen {
     private List<PlayerInfo> cachedPlayers = List.of();
 
     private final List<FlatButton> flatButtons = new ArrayList<>();
+    /** 主按钮（蓝色发送按钮这类）。 */
+    private final List<PrimaryButton> primaryButtons = new ArrayList<>();
+    /** 工具栏图标按钮。 */
+    private final List<IconButton> iconButtons = new ArrayList<>();
 
     /** 固定面板区域（屏幕左侧）。 */
     private int panelX;
@@ -121,6 +208,28 @@ public class XuanXuChatScreen extends Screen {
     private long hintUntil;
 
     private record FlatButton(int x, int y, int w, int h, Component label, Runnable action) {
+    }
+
+    /** 蓝色主按钮。 */
+    private record PrimaryButton(int x, int y, int w, int h, Component label, Runnable action) {
+    }
+
+    /** 工具栏图标按钮。 */
+    private record IconButton(int x, int y, int w, int h, ToolIcon icon, String label, Runnable action) {
+    }
+
+    /**
+     * 会话列表里的一行。
+     *
+     * @param key       会话键（{@link ChatHub#PUBLIC} 或玩家名）
+     * @param name      显示名
+     * @param player    头像对应的玩家名；世界聊天为 null（画专用图标）
+     * @param preview   最新消息预览
+     * @param timestamp 最新消息时间；没有消息为 0
+     * @param unread    未读数
+     */
+    private record ConversationItem(String key, String name, String player, String preview,
+                                   long timestamp, int unread) {
     }
 
     /**
@@ -152,40 +261,43 @@ public class XuanXuChatScreen extends Screen {
         ChatHub.setOpenConversation(this.conversationOpen && !this.collapsed ? this.conversation : null);
         this.cachedPlayers = collectOnlinePlayers();
         this.flatButtons.clear();
+        this.primaryButtons.clear();
+        this.iconButtons.clear();
         computePanel();
 
-        int barY = this.panelY + this.panelH - MARGIN - BAR_HEIGHT;
-        int barX = this.panelX + SIDEBAR_WIDTH + MARGIN;
-
-        // 搜索框（侧边栏顶部，标题栏下方）：收起状态下也保留
-        this.searchBox = new EditBox(this.font, this.panelX + MARGIN + 2,
-                this.searchBoxY(),
-                SIDEBAR_WIDTH - MARGIN * 2 - 4, SEARCH_BOX_HEIGHT, Component.literal("搜索消息..."));
+        // 搜索框（会话列表栏顶部）：收起状态下也保留
+        this.searchBox = new EditBox(this.font, listX() + MARGIN + 6, searchBoxTextY(),
+                listWidth() - MARGIN * 2 - 12, SEARCH_BOX_HEIGHT, Component.literal("搜索消息..."));
         this.searchBox.setMaxLength(32);
         this.searchBox.setBordered(false);
         this.searchBox.setHint(Component.literal("搜索消息"));
         this.searchBox.setValue(this.searchDraft);
         addRenderableWidget(this.searchBox);
 
-        // 右侧面板收起时，输入区和工具栏整个不存在
+        // 标题栏右侧：收起整个聊天区
+        addFlatButton(this.panelX + this.panelW - MARGIN - 18, this.panelY + 3, 18, 16,
+                Component.literal("×"), this::collapseRightPanel);
+
+        // 聊天区收起时，输入区和工具栏整个不存在
         if (this.collapsed) {
             this.input = null;
             return;
         }
 
-        // 工具栏：表情
-        addFlatButton(barX, barY, 22, BAR_HEIGHT, Component.literal("☺"),
-                () -> this.emojiOpen = !this.emojiOpen);
+        // 工具栏：图标按钮（表情 / 截图 / 传文件 / 图片 / 红包 / 语音 / 震动）
+        int toolY = toolBarY();
+        int toolX = areaX();
+        addIconButton(toolX, toolY, ToolIcon.EMOJI, () -> this.emojiOpen = !this.emojiOpen);
+        addIconButton(toolX + 24, toolY, ToolIcon.SCREENSHOT, () -> showHint("截图功能开发中"));
+        addIconButton(toolX + 48, toolY, ToolIcon.FILE, () -> showHint("传文件功能开发中"));
+        addIconButton(toolX + 72, toolY, ToolIcon.IMAGE, this::insertClipboardImage);
+        addIconButton(toolX + 96, toolY, ToolIcon.RED_PACKET, () -> showHint("红包功能开发中"));
+        addIconButton(toolX + 120, toolY, ToolIcon.VOICE, () -> showHint("语音功能开发中"));
+        addIconButton(toolX + 144, toolY, ToolIcon.SHAKE, () -> showHint("震动功能开发中"));
 
-        // 工具栏：图片
-        addFlatButton(barX + 26, barY, 22, BAR_HEIGHT, Component.literal("图"),
-                this::insertClipboardImage);
-
-        // 聊天输入框
-        int inputX = barX + 58;
-        int inputWidth = Math.max(80, this.panelX + this.panelW - MARGIN - 52 - inputX);
-        this.input = new EditBox(this.font, inputX, barY, inputWidth, BAR_HEIGHT,
-                Component.literal("输入消息..."));
+        // 输入框
+        this.input = new EditBox(this.font, inputBoxX() + 6, inputTextY(), inputBoxW() - 12,
+                INPUT_BAR_HEIGHT, Component.literal("输入消息..."));
         this.input.setValue(this.draft);
         this.input.setMaxLength(256);
         this.input.setFocused(true);
@@ -195,19 +307,15 @@ public class XuanXuChatScreen extends Screen {
         addRenderableWidget(this.input);
         setInitialFocus(this.input);
 
-        // 标题栏右侧：收起整个右侧面板（不只是清空当前会话）
-        addFlatButton(this.panelX + this.panelW - MARGIN - 18, this.panelY + 3, 18, 16,
-                Component.literal("×"),
-                this::collapseRightPanel);
-
-        // 发送按钮
-        addFlatButton(this.panelX + this.panelW - MARGIN - 48, barY, 48, BAR_HEIGHT,
-                Component.literal("发送"),
+        // 右下角蓝色发送按钮
+        addPrimaryButton(areaX() + areaW() - SEND_BUTTON_WIDTH, inputBoxTop(),
+                SEND_BUTTON_WIDTH, INPUT_BAR_HEIGHT, Component.literal("发送"),
                 () -> sendMessage(this.input.getValue()));
     }
 
     /** 记住输入框 / 搜索框内容，供重建控件后恢复。 */
-    private void rememberInputState() {        if (this.input != null) {
+    private void rememberInputState() {
+        if (this.input != null) {
             this.draft = this.input.getValue();
         }
         if (this.searchBox != null) {
@@ -215,7 +323,7 @@ public class XuanXuChatScreen extends Screen {
         }
     }
 
-    /** 收起右侧面板：只剩会话列表，点任意会话重新展开。 */
+    /** 收起聊天区：面板只剩导航栏 + 会话列表，点任意会话重新展开。 */
     private void collapseRightPanel() {
         if (this.collapsed) {
             return;
@@ -228,31 +336,112 @@ public class XuanXuChatScreen extends Screen {
         this.messageMenuTarget = null;
         this.headMenuPlayer = null;
         this.rebuildWidgets();
-        showHint("点击会话展开");
     }
 
-    /** 计算固定面板区域：固定在屏幕左侧，大小适中。 */
+    /** 计算固定面板区域：固定在屏幕左侧，三栏（导航 / 会话列表 / 聊天）。 */
     private void computePanel() {
-        // 收起状态：面板只剩会话列表那么宽
-        this.panelW = this.collapsed
-                ? SIDEBAR_WIDTH + MARGIN
-                : (int) Math.max(480, Math.min(760, this.width * 0.46));
-        this.panelH = (int) Math.min(this.height - 20, Math.max(380, this.height * 0.88));
+        this.panelH = (int) Math.min(this.height - 16, Math.max(320, this.height * 0.9));
+        this.panelY = Math.max(4, (this.height - this.panelH) / 2);
         this.panelX = 8;
-        this.panelY = (this.height - this.panelH) / 2;
+        int maxW = Math.max(360, this.width - this.panelX - 8);
+        if (this.collapsed) {
+            this.panelW = Math.min(maxW, NAV_WIDTH + LIST_WIDTH);
+        } else {
+            // 聊天区至少留 260px，屏幕小的时候整体收窄
+            int minW = NAV_WIDTH + 120 + 260;
+            int want = Math.max(880, (int) (this.width * 0.68));
+            this.panelW = Math.min(maxW, Math.max(minW, want));
+        }
     }
 
-    /** 侧边栏搜索框的 y 坐标。 */
-    private int searchBoxY() {
-        return this.panelY + TITLE_BAR_HEIGHT + MARGIN + SEARCH_BOX_TOP_OFFSET;
+    // ==================== 区域 ====================
+
+    /** 标题栏下方的内容起始 y。 */
+    private int contentY() {
+        return this.panelY + TITLE_BAR_HEIGHT;
     }
 
-    /** 会话条目的起始 y：渲染与点击判定共用同一个值，避免 UI 与热区错位。 */
-    private int sidebarItemsTop() {
-        return searchBoxY() + SEARCH_BOX_HEIGHT + MARGIN;
+    /** 会话列表栏左边界（导航栏右侧）。 */
+    private int listX() {
+        return this.panelX + NAV_WIDTH;
     }
 
-    private List<PlayerInfo> collectOnlinePlayers() {        Minecraft mc = Minecraft.getInstance();
+    /** 会话列表栏宽度：屏幕太窄时让出空间给聊天区。 */
+    private int listWidth() {
+        if (this.collapsed) {
+            return Math.max(120, this.panelW - NAV_WIDTH);
+        }
+        int maxList = Math.max(120, this.panelW - NAV_WIDTH - 260);
+        return Math.min(LIST_WIDTH, maxList);
+    }
+
+    /** 聊天栏左边界（会话列表右侧）。 */
+    private int chatX() {
+        return this.panelX + NAV_WIDTH + listWidth();
+    }
+
+    private int chatW() {
+        return this.panelX + this.panelW - chatX();
+    }
+
+    /** 输入框 / 发送按钮所在行的视觉底板顶部。 */
+    private int inputBoxTop() {
+        return this.panelY + this.panelH - MARGIN - INPUT_BAR_HEIGHT;
+    }
+
+    /** 输入框控件 y：控件原点即文字顶部，下移让文字在底板里垂直居中。 */
+    private int inputTextY() {
+        return inputBoxTop() + (INPUT_BAR_HEIGHT - TEXT_LINE_HEIGHT) / 2;
+    }
+
+    /** 输入框底板左边界 / 宽度（右侧给发送按钮留位置）。 */
+    private int inputBoxX() {
+        return areaX();
+    }
+
+    private int inputBoxW() {
+        return Math.max(80, areaW() - SEND_BUTTON_WIDTH - 14);
+    }
+
+    /** 表情 / 截图 / 传文件 / 发图片 工具栏所在行。 */
+    private int toolBarY() {
+        return inputBoxTop() - TOOL_GAP - TOOL_BAR_HEIGHT;
+    }
+
+    /** 消息区（聊天记录）。 */
+    private int areaX() {
+        return chatX() + MARGIN;
+    }
+
+    private int areaY() {
+        return contentY() + MARGIN;
+    }
+
+    private int areaW() {
+        return Math.max(60, chatW() - MARGIN * 2);
+    }
+
+    private int areaH() {
+        return Math.max(40, toolBarY() - TOOL_GAP - areaY());
+    }
+
+    /** 会话列表搜索框的视觉底板顶部。 */
+    private int searchBoxTop() {
+        return contentY() + MARGIN + SEARCH_BOX_TOP_OFFSET;
+    }
+
+    /** 搜索框控件 y：控件原点即文字顶部，下移让文字在底板里垂直居中。 */
+    private int searchBoxTextY() {
+        return searchBoxTop() + (SEARCH_BOX_HEIGHT - TEXT_LINE_HEIGHT) / 2;
+    }
+
+    /** 会话条目起始 y：渲染与点击判定共用同一个值，避免 UI 与热区错位。 */
+    private int conversationItemsTop() {
+        return searchBoxTop() + SEARCH_BOX_HEIGHT + MARGIN;
+    }
+
+    private List<PlayerInfo> collectOnlinePlayers() {
+        Minecraft mc = Minecraft.getInstance();
         if (mc.getConnection() == null) {
             return List.of();
         }
@@ -268,24 +457,45 @@ public class XuanXuChatScreen extends Screen {
         // 不重置它，正在翻看历史的人就不会被拽回底部。
         updateAtQuery();
 
+        // 非「消息」栏目下，会话列表和输入框都不显示
+        boolean messagesTab = this.activeTab == NavTab.MESSAGES;
+        if (this.searchBox != null) {
+            this.searchBox.setVisible(messagesTab);
+        }
+        if (this.input != null) {
+            this.input.setVisible(messagesTab);
+        }
+
         // 屏幕暗化 + 面板背景
         guiGraphics.fill(0, 0, this.width, this.height, 0x80000000);
         guiGraphics.fill(this.panelX, this.panelY,
                 this.panelX + this.panelW, this.panelY + this.panelH, this.theme.background());
 
+        // 三栏：导航 / 会话列表 / 聊天
+        renderNavBar(guiGraphics, mouseX, mouseY);
         renderTitleBar(guiGraphics);
-        renderSidebar(guiGraphics, mouseX, mouseY);
-        if (!this.collapsed) {
-            renderMessages(guiGraphics, mouseX, mouseY);
-            renderInputBar(guiGraphics);
+        if (!messagesTab) {
+            renderPlaceholderPage(guiGraphics);
+        } else {
+            renderConversationList(guiGraphics, mouseX, mouseY);
+            if (!this.collapsed) {
+                renderMessages(guiGraphics, mouseX, mouseY);
+                renderInputBar(guiGraphics);
+            }
         }
-        renderFlatButtons(guiGraphics, mouseX, mouseY);
+
+        // 聊天区专属控件（发送、表情/图片等工具、收起按钮）只在「消息」栏目下出现
+        if (messagesTab) {
+            renderFlatButtons(guiGraphics, mouseX, mouseY);
+            renderPrimaryButtons(guiGraphics, mouseX, mouseY);
+            renderIconButtons(guiGraphics, mouseX, mouseY);
+        }
 
         for (var renderable : this.renderables) {
             renderable.render(guiGraphics, mouseX, mouseY, partialTick);
         }
 
-        if (!this.collapsed) {
+        if (!this.collapsed && messagesTab) {
             if (this.emojiOpen) {
                 renderEmojiPanel(guiGraphics, mouseX, mouseY);
             }
@@ -299,14 +509,455 @@ public class XuanXuChatScreen extends Screen {
         if (this.messageMenuTarget != null) {
             renderMessageMenu(guiGraphics, mouseX, mouseY);
         }
+        renderNavTooltip(guiGraphics, mouseX, mouseY);
+        if (messagesTab) {
+            renderIconTooltips(guiGraphics, mouseX, mouseY);
+        }
         renderHint(guiGraphics);
     }
 
-    /** 顶部标题栏。 */
+    // ==================== 三栏：导航 / 列表 / 聊天 ====================
+
+    /** 导航项行高：面板矮时自动压缩，保证 10 个栏目都放得下。 */
+    private int navRowHeight() {
+        int available = this.panelH - MARGIN * 2;
+        int fit = available / NavTab.values().length;
+        return Math.max(18, Math.min(NAV_ITEM_HEIGHT, fit));
+    }
+
+    /**
+     * 第 index 个导航项的 y；返回 -1 表示放不下、不显示。
+     * <p>
+     * 主菜单固定贴在导航栏左下角，其余栏目从顶部依次排列。
+     * 渲染和点击判定共用这个方法，保证热区和图形一致。
+     */
+    private int navItemTop(int index) {
+        NavTab tab = NavTab.values()[index];
+        int rowH = navRowHeight();
+        int itemH = rowH - 6;
+        int mainMenuTop = this.panelY + this.panelH - MARGIN - itemH;
+        if (tab == NavTab.MAIN_MENU) {
+            return mainMenuTop;
+        }
+        int y = this.panelY + MARGIN + index * rowH;
+        if (y + itemH + 4 > mainMenuTop) {
+            return -1;
+        }
+        return y;
+    }
+
+    /** 最左侧竖排功能导航栏。 */
+    private void renderNavBar(GuiGraphics guiGraphics, int mouseX, int mouseY) {
+        int left = this.panelX;
+        guiGraphics.fill(left, this.panelY, left + NAV_WIDTH, this.panelY + this.panelH, NAV_BG);
+
+        NavTab[] tabs = NavTab.values();
+        for (int i = 0; i < tabs.length; i++) {
+            int y = navItemTop(i);
+            if (y < 0) {
+                continue;
+            }
+            NavTab tab = tabs[i];
+            boolean active = tab == this.activeTab;
+            int itemX = left + NAV_ITEM_INSET;
+            int itemW = NAV_WIDTH - NAV_ITEM_INSET * 2;
+            int itemH = navRowHeight() - 6;
+            boolean hover = isInside(mouseX, mouseY, itemX, y, itemW, itemH);
+            int backdrop = NAV_BG;
+            if (active) {
+                backdrop = this.theme.panelSelected();
+                fillRoundedRect(guiGraphics, itemX, y, itemW, itemH, 4, backdrop);
+                // 选中项左侧的高亮竖条
+                guiGraphics.fill(itemX - 2, y + 5, itemX, y + itemH - 5, this.theme.accent());
+            } else if (hover) {
+                backdrop = this.theme.buttonBg();
+                fillRoundedRect(guiGraphics, itemX, y, itemW, itemH, 4, backdrop);
+            }
+            int color = active ? this.theme.accent() : (hover ? this.theme.textPrimary() : this.theme.textSecondary());
+            drawNavIcon(guiGraphics, tab, itemX + itemW / 2, y + itemH / 2, color, backdrop);
+        }
+    }
+
+    /**
+     * 代码绘制的导航图标（16×16 局部坐标系，origin 为图标左上角）。
+     *
+     * @param backdrop 图标所在背景色，镂空处用它填
+     */
+    private void drawNavIcon(GuiGraphics guiGraphics, NavTab tab, int cx, int cy, int color, int backdrop) {
+        int x = cx - 8;
+        int y = cy - 8;
+        switch (tab) {
+            case MESSAGES -> {
+                // 对话气泡 + 左下小尾巴
+                fillRoundedRect(guiGraphics, x + 1, y + 3, 14, 9, 3, color);
+                guiGraphics.fill(x + 4, y + 11, x + 7, y + 13, color);
+                guiGraphics.fill(x + 3, y + 12, x + 6, y + 14, color);
+            }
+            case CONTACTS -> {
+                // 头 + 肩
+                fillCircle(guiGraphics, cx, y + 5, 3, color);
+                fillRoundedRect(guiGraphics, x + 2, y + 10, 12, 6, 3, color);
+            }
+            case FAVORITES -> {
+                // 书签（底部带 V 缺口）
+                guiGraphics.fill(x + 4, y + 2, x + 6, y + 13, color);
+                guiGraphics.fill(x + 10, y + 2, x + 12, y + 13, color);
+                guiGraphics.fill(x + 4, y + 2, x + 12, y + 4, color);
+                guiGraphics.fill(x + 6, y + 11, x + 8, y + 13, color);
+                guiGraphics.fill(x + 8, y + 11, x + 10, y + 13, color);
+            }
+            case CHANNELS -> {
+                // 井号 #
+                guiGraphics.fill(x + 3, y + 5, x + 13, y + 7, color);
+                guiGraphics.fill(x + 3, y + 10, x + 13, y + 12, color);
+                guiGraphics.fill(x + 5, y + 2, x + 7, y + 14, color);
+                guiGraphics.fill(x + 9, y + 2, x + 11, y + 14, color);
+            }
+            case MOMENTS -> {
+                // 相机：机身 + 顶部突起 + 镜头
+                fillRoundedRect(guiGraphics, x + 1, y + 4, 14, 9, 2, color);
+                guiGraphics.fill(x + 5, y + 2, x + 11, y + 4, color);
+                fillCircle(guiGraphics, cx, y + 9, 3, backdrop);
+                fillCircle(guiGraphics, cx, y + 9, 1, color);
+            }
+            case APPS -> {
+                // 2×2 宫格
+                fillRoundedRect(guiGraphics, x + 2, y + 2, 6, 6, 2, color);
+                fillRoundedRect(guiGraphics, x + 9, y + 2, 6, 6, 2, color);
+                fillRoundedRect(guiGraphics, x + 2, y + 9, 6, 6, 2, color);
+                fillRoundedRect(guiGraphics, x + 9, y + 9, 6, 6, 2, color);
+            }
+            case MORE -> {
+                // 三个点
+                fillCircle(guiGraphics, cx - 5, cy, 2, color);
+                fillCircle(guiGraphics, cx, cy, 2, color);
+                fillCircle(guiGraphics, cx + 5, cy, 2, color);
+            }
+            case MAIL -> {
+                // 信封：边框 + 内部折线
+                guiGraphics.fill(x + 1, y + 4, x + 15, y + 6, color);
+                guiGraphics.fill(x + 1, y + 12, x + 15, y + 14, color);
+                guiGraphics.fill(x + 1, y + 4, x + 3, y + 14, color);
+                guiGraphics.fill(x + 13, y + 4, x + 15, y + 14, color);
+                for (int i = 0; i < 5; i++) {
+                    guiGraphics.fill(x + 3 + i, y + 6 + i, x + 5 + i, y + 7 + i, color);
+                    guiGraphics.fill(x + 11 - i, y + 6 + i, x + 13 - i, y + 7 + i, color);
+                }
+            }
+            case DEVICES -> {
+                // 显示器：屏幕 + 支架 + 底座
+                fillRoundedRect(guiGraphics, x + 1, y + 2, 14, 10, 2, color);
+                fillRoundedRect(guiGraphics, x + 2, y + 3, 12, 8, 1, backdrop);
+                guiGraphics.fill(x + 7, y + 12, x + 9, y + 14, color);
+                guiGraphics.fill(x + 4, y + 14, x + 12, y + 15, color);
+            }
+            case MAIN_MENU -> {
+                // 三条横线
+                guiGraphics.fill(x + 2, y + 4, x + 14, y + 6, color);
+                guiGraphics.fill(x + 2, y + 7, x + 14, y + 9, color);
+                guiGraphics.fill(x + 2, y + 10, x + 14, y + 12, color);
+            }
+        }
+    }
+
+    /** 悬停时在导航栏右侧显示栏目全名。 */
+    private void renderNavTooltip(GuiGraphics guiGraphics, int mouseX, int mouseY) {
+        int index = navItemAt(mouseX, mouseY);
+        if (index < 0) {
+            return;
+        }
+        String label = NavTab.values()[index].label;
+        int y = Math.max(this.panelY + 4,
+                Math.min(mouseY - 4, this.panelY + this.panelH - 16));
+        drawTooltipLabel(guiGraphics, label, this.panelX + NAV_WIDTH + 4, y);
+    }
+
+    /** 按最大宽度绘制文字：超出可用宽度就等比缩小，绝对不会越界。 */
+    private void drawScaledString(GuiGraphics guiGraphics, String text, int x, int y, int maxWidth, int color) {
+        if (text == null || text.isEmpty() || maxWidth <= 0) {
+            return;
+        }
+        int width = this.font.width(text);
+        if (width <= maxWidth) {
+            guiGraphics.drawString(this.font, text, x, y, color);
+            return;
+        }
+        float scale = (float) maxWidth / (float) width;
+        guiGraphics.pose().pushPose();
+        guiGraphics.pose().translate(x, y, 0.0F);
+        guiGraphics.pose().scale(scale, scale, 1.0F);
+        guiGraphics.drawString(this.font, text, 0, 0, color);
+        guiGraphics.pose().popPose();
+    }
+
+    /** 深色圆角小标签（导航栏 / 工具栏的悬停提示共用）。 */
+    private void drawTooltipLabel(GuiGraphics guiGraphics, String label, int x, int y) {
+        int width = this.font.width(label) + 10;
+        fillRoundedRect(guiGraphics, x, y, width, 15, 4, 0xF0202030);
+        guiGraphics.drawString(this.font, label, x + 5, y + 4, 0xFFFFFFFF);
+    }
+
+    /** 代码绘制的工具栏图标（16×16 局部坐标系，origin 为左上角）。 */
+    private void drawToolIcon(GuiGraphics guiGraphics, ToolIcon icon, int cx, int cy, int color, int backdrop) {
+        int x = cx - 8;
+        int y = cy - 8;
+        switch (icon) {
+            case EMOJI -> drawFace(guiGraphics, x + 1, y + 1, 14, Face.SMILE);
+            case SCREENSHOT -> {
+                // 四个取景角
+                guiGraphics.fill(x + 2, y + 2, x + 6, y + 4, color);
+                guiGraphics.fill(x + 2, y + 2, x + 4, y + 6, color);
+                guiGraphics.fill(x + 10, y + 2, x + 14, y + 4, color);
+                guiGraphics.fill(x + 12, y + 2, x + 14, y + 6, color);
+                guiGraphics.fill(x + 2, y + 10, x + 6, y + 12, color);
+                guiGraphics.fill(x + 2, y + 8, x + 4, y + 12, color);
+                guiGraphics.fill(x + 10, y + 10, x + 14, y + 12, color);
+                guiGraphics.fill(x + 12, y + 8, x + 14, y + 12, color);
+            }
+            case FILE -> {
+                // 文件夹
+                guiGraphics.fill(x + 2, y + 3, x + 8, y + 5, color);
+                fillRoundedRect(guiGraphics, x + 1, y + 5, 14, 9, 2, color);
+            }
+            case IMAGE -> {
+                // 相框 + 远山 + 太阳
+                guiGraphics.fill(x + 1, y + 2, x + 15, y + 4, color);
+                guiGraphics.fill(x + 1, y + 12, x + 15, y + 14, color);
+                guiGraphics.fill(x + 1, y + 2, x + 3, y + 14, color);
+                guiGraphics.fill(x + 13, y + 2, x + 15, y + 14, color);
+                guiGraphics.fill(x + 4, y + 9, x + 12, y + 12, color);
+                guiGraphics.fill(x + 6, y + 6, x + 9, y + 9, color);
+                fillCircle(guiGraphics, x + 11, y + 6, 1, color);
+            }
+            case RED_PACKET -> {
+                // 红包：圆角块 + 中间金色横带
+                fillRoundedRect(guiGraphics, x + 2, y + 2, 12, 12, 2, color);
+                guiGraphics.fill(x + 2, y + 7, x + 14, y + 9, backdrop);
+                guiGraphics.fill(x + 7, y + 6, x + 9, y + 10, color);
+            }
+            case VOICE -> {
+                // 麦克风
+                fillRoundedRect(guiGraphics, x + 5, y + 1, 6, 9, 3, color);
+                guiGraphics.fill(x + 5, y + 9, x + 11, y + 11, color);
+                guiGraphics.fill(x + 7, y + 11, x + 9, y + 14, color);
+                guiGraphics.fill(x + 4, y + 14, x + 12, y + 15, color);
+            }
+            case SHAKE -> {
+                // 手机 + 两侧震动线
+                fillRoundedRect(guiGraphics, x + 5, y + 1, 6, 14, 2, color);
+                fillRoundedRect(guiGraphics, x + 6, y + 3, 4, 10, 1, backdrop);
+                guiGraphics.fill(x + 1, y + 4, x + 3, y + 5, color);
+                guiGraphics.fill(x + 1, y + 7, x + 3, y + 8, color);
+                guiGraphics.fill(x + 1, y + 10, x + 3, y + 11, color);
+                guiGraphics.fill(x + 13, y + 4, x + 15, y + 5, color);
+                guiGraphics.fill(x + 13, y + 7, x + 15, y + 8, color);
+                guiGraphics.fill(x + 13, y + 10, x + 15, y + 11, color);
+            }
+        }
+    }
+
+    /** 点击到第几个导航项，没有则 -1。 */
+    private int navItemAt(double mouseX, double mouseY) {
+        if (mouseX < this.panelX || mouseX > this.panelX + NAV_WIDTH) {
+            return -1;
+        }
+        NavTab[] tabs = NavTab.values();
+        for (int i = 0; i < tabs.length; i++) {
+            int y = navItemTop(i);
+            if (y < 0) {
+                continue;
+            }
+            if (isInside(mouseX, mouseY, this.panelX + NAV_ITEM_INSET, y,
+                    NAV_WIDTH - NAV_ITEM_INSET * 2, navRowHeight() - 6)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /** 顶部标题栏（覆盖会话列表 + 聊天两栏）。 */
     private void renderTitleBar(GuiGraphics guiGraphics) {
-        guiGraphics.fill(this.panelX, this.panelY,
+        guiGraphics.fill(listX(), this.panelY,
                 this.panelX + this.panelW, this.panelY + TITLE_BAR_HEIGHT, this.theme.panelSelected());
-        guiGraphics.drawString(this.font, "玄墟聊天", this.panelX + MARGIN, this.panelY + 7, this.theme.accent());
+        String title = this.activeTab == NavTab.MESSAGES ? "玄墟聊天" : this.activeTab.label;
+        guiGraphics.drawString(this.font, title, listX() + MARGIN, this.panelY + 7, this.theme.accent());
+    }
+
+    /** 非「消息」栏目的占位页（功能待做）。 */
+    private void renderPlaceholderPage(GuiGraphics guiGraphics) {
+        int left = listX();
+        int right = this.panelX + this.panelW;
+        int bottom = this.panelY + this.panelH;
+        guiGraphics.fill(left, contentY(), right, bottom, this.theme.panel());
+
+        String title = this.activeTab.label;
+        String sub = "「" + title + "」页面开发中";
+        int cx = left + (right - left) / 2;
+        int cy = contentY() + (bottom - contentY()) / 2;
+        int tw = this.font.width(title);
+        guiGraphics.drawString(this.font, title, cx - tw / 2, cy - 14, this.theme.accent());
+        int sw = this.font.width(sub);
+        guiGraphics.drawString(this.font, sub, cx - sw / 2, cy, this.theme.textSecondary());
+    }
+
+    /** 中间会话列表栏：头像 + 名字 + 最新消息预览 + 时间 + 未读。 */
+    private void renderConversationList(GuiGraphics guiGraphics, int mouseX, int mouseY) {
+        int left = listX();
+        int right = chatX();
+        int bottom = this.panelY + this.panelH;
+        guiGraphics.fill(left, contentY(), right, bottom, this.theme.panel());
+
+        // 栏目标题
+        guiGraphics.drawString(this.font, "消息", left + MARGIN, contentY() + MARGIN, this.theme.accent());
+
+        // 搜索框底板
+        fillRoundedRect(guiGraphics, left + MARGIN, searchBoxTop(),
+                listWidth() - MARGIN * 2, SEARCH_BOX_HEIGHT, 5, this.theme.inputBg());
+
+        int y = conversationItemsTop();
+        List<ConversationItem> items = conversationItems();
+        for (ConversationItem item : items) {
+            if (y + CONVERSATION_ITEM_HEIGHT > bottom) {
+                break;
+            }
+            boolean selected = item.key().equals(this.conversation) && this.conversationOpen && !this.collapsed;
+            boolean hover = isInside(mouseX, mouseY, left, y, right - left, CONVERSATION_ITEM_HEIGHT);
+            if (selected) {
+                guiGraphics.fill(left, y, right, y + CONVERSATION_ITEM_HEIGHT - 2, this.theme.panelSelected());
+            } else if (hover) {
+                guiGraphics.fill(left, y, right, y + CONVERSATION_ITEM_HEIGHT - 2, 0x22FFFFFF);
+            }
+
+            // 头像
+            if (item.player() != null) {
+                drawPlayerHead(guiGraphics, item.player(), left + MARGIN, y + 6, LIST_AVATAR);
+            } else {
+                drawWorldAvatar(guiGraphics, left + MARGIN, y + 6, LIST_AVATAR);
+            }
+
+            int textX = left + MARGIN + LIST_AVATAR + 8;
+            int textRight = right - MARGIN;
+
+            // 时间（右上角）
+            String time = formatListTime(item.timestamp());
+            if (time != null && !time.isEmpty()) {
+                guiGraphics.drawString(this.font, time, textRight - this.font.width(time), y + 7,
+                        this.theme.textSecondary());
+                textRight -= this.font.width(time) + 6;
+            }
+            // 名字
+            guiGraphics.drawString(this.font, ellipsize(item.name(), textRight - textX + 4),
+                    textX, y + 7, selected ? this.theme.accent() : this.theme.textPrimary());
+
+            // 最新消息预览（给未读红点留位置）
+            int badgeWidth = 0;
+            if (item.unread() > 0) {
+                String badgeText = item.unread() > 99 ? "99+" : String.valueOf(item.unread());
+                badgeWidth = Math.max(10, this.font.width(badgeText) + 4) + 6;
+            }
+            String preview = item.preview();
+            if (preview != null && !preview.isEmpty()) {
+                guiGraphics.drawString(this.font, ellipsize(preview, right - MARGIN - badgeWidth - textX),
+                        textX, y + 23, this.theme.textSecondary());
+            } else {
+                guiGraphics.drawString(this.font, "暂无消息", textX, y + 23, this.theme.textSecondary());
+            }
+
+            // 未读红点
+            if (item.unread() > 0) {
+                drawUnreadBadge(guiGraphics, item.unread(), right - MARGIN, y + 25);
+            }
+            y += CONVERSATION_ITEM_HEIGHT;
+        }
+    }
+
+    /** 世界聊天没有玩家头像，画一个深色圆角方块 + 「世」。 */
+    private void drawWorldAvatar(GuiGraphics guiGraphics, int x, int y, int size) {
+        fillRoundedRect(guiGraphics, x, y, size, size, 4, 0xFF2F5FC4);
+        String glyph = "世";
+        guiGraphics.drawString(this.font, glyph,
+                x + (size - this.font.width(glyph)) / 2, y + (size - LINE) / 2 + 1, 0xFFFFFFFF);
+    }
+
+    /** 会话列表项集合：世界聊天 + 在线玩家 + 有历史记录的会话，按最新消息时间倒序。 */
+    private List<ConversationItem> conversationItems() {
+        java.util.LinkedHashSet<String> keys = new java.util.LinkedHashSet<>();
+        keys.add(ChatHub.PUBLIC);
+        for (PlayerInfo info : this.cachedPlayers) {
+            keys.add(info.getProfile().getName());
+        }
+        keys.addAll(ChatHub.conversationKeys());
+
+        List<ConversationItem> items = new ArrayList<>();
+        for (String key : keys) {
+            ChatMessage last = ChatHub.lastMessage(key);
+            String preview = "";
+            long timestamp = 0L;
+            if (last != null) {
+                preview = last.self() ? "我：" + last.plainText() : last.plainText();
+                timestamp = last.timestamp();
+            }
+            boolean isPublic = ChatHub.PUBLIC.equals(key);
+            items.add(new ConversationItem(key,
+                    isPublic ? WORLD_CHAT_NAME : key,
+                    isPublic ? null : key,
+                    preview, timestamp, ChatHub.unreadOf(key)));
+        }
+        items.sort((a, b) -> {
+            if (a.timestamp() != b.timestamp()) {
+                return Long.compare(b.timestamp(), a.timestamp());
+            }
+            if (ChatHub.PUBLIC.equals(a.key())) {
+                return -1;
+            }
+            if (ChatHub.PUBLIC.equals(b.key())) {
+                return 1;
+            }
+            return a.name().compareTo(b.name());
+        });
+        return items;
+    }
+
+    /** 点击到第几个会话，没有则 -1。 */
+    private int conversationItemAt(double mouseX, double mouseY) {
+        int left = listX();
+        int right = chatX();
+        if (mouseX < left || mouseX > right) {
+            return -1;
+        }
+        int y = conversationItemsTop();
+        List<ConversationItem> items = conversationItems();
+        for (int i = 0; i < items.size(); i++) {
+            if (isInside(mouseX, mouseY, left, y, right - left, CONVERSATION_ITEM_HEIGHT)) {
+                return i;
+            }
+            y += CONVERSATION_ITEM_HEIGHT;
+        }
+        return -1;
+    }
+
+    /** 选中第 index 个会话，并切回「消息」栏目。 */
+    private void selectConversation(int index) {
+        List<ConversationItem> items = conversationItems();
+        if (index < 0 || index >= items.size()) {
+            return;
+        }
+        this.activeTab = NavTab.MESSAGES;
+        this.conversation = items.get(index).key();
+        this.conversationOpen = true;
+        this.scroll = 0;
+        boolean wasCollapsed = this.collapsed;
+        this.collapsed = false;
+        ChatHub.setOpenConversation(this.conversation);
+        rememberInputState();
+        if (wasCollapsed) {
+            this.rebuildWidgets();
+            if (this.input != null) {
+                this.input.setFocused(true);
+            }
+        } else if (this.input != null) {
+            this.input.setEditable(true);
+        }
     }
 
     /** 界面内提示（替代动作栏，避免文字过长显示不全）。 */
@@ -319,98 +970,62 @@ public class XuanXuChatScreen extends Screen {
         if (this.hintText == null || System.currentTimeMillis() > this.hintUntil) {
             return;
         }
+        int centerX = this.collapsed ? this.listX() : this.chatX();
+        int centerW = this.collapsed ? this.panelX + this.panelW - this.listX() : this.chatW();
         int textWidth = this.font.width(this.hintText);
-        int x = this.panelX + (this.panelW - textWidth) / 2;
-        int y = this.panelY + this.panelH - MARGIN - BAR_HEIGHT - 20;
+        int x = centerX + (centerW - textWidth) / 2;
+        x = Math.max(this.panelX + 4, Math.min(x, this.panelX + this.panelW - textWidth - 4));
+        int y = this.toolBarY() - 22;
         guiGraphics.fill(x - 6, y - 3, x + textWidth + 6, y + 11, 0xD0202030);
         guiGraphics.drawString(this.font, this.hintText, x, y, 0xFFFFDD55);
     }
 
-    private void renderSidebar(GuiGraphics guiGraphics, int mouseX, int mouseY) {
-        int left = this.panelX;
-        int top = this.panelY + TITLE_BAR_HEIGHT;
-        guiGraphics.fill(left, top, left + SIDEBAR_WIDTH, this.panelY + this.panelH, this.theme.panel());
-
-        // 标题
-        guiGraphics.drawString(this.font, "会话", left + MARGIN, top + MARGIN, this.theme.accent());
-
-        // 搜索框底板（位于「会话」标题和列表之间，收起状态下同样显示）
-        if (this.searchBox != null) {
-            int bx = left + MARGIN;
-            int by = searchBoxY();
-            guiGraphics.fill(bx, by, bx + SIDEBAR_WIDTH - MARGIN * 2, by + SEARCH_BOX_HEIGHT,
-                    this.theme.inputBg());
-        }
-
-        int y = sidebarItemsTop();
-
-        boolean publicSelected = ChatHub.PUBLIC.equals(this.conversation);
-        if (publicSelected) {
-            guiGraphics.fill(left + 3, y, left + SIDEBAR_WIDTH - 3, y + 18, this.theme.panelSelected());
-        }
-        guiGraphics.drawString(this.font, "公共频道", left + MARGIN + 2, y + 5,
-                publicSelected ? this.theme.accent() : this.theme.textPrimary());
-        drawUnreadBadge(guiGraphics, ChatHub.PUBLIC, left, y);
-        y += 22;
-
-        for (PlayerInfo info : this.cachedPlayers) {
-            String name = info.getProfile().getName();
-            boolean selected = name.equals(this.conversation);
-            if (selected) {
-                guiGraphics.fill(left + 3, y, left + SIDEBAR_WIDTH - 3, y + 18, this.theme.panelSelected());
-            }
-            drawPlayerHead(guiGraphics, name, left + MARGIN + 2, y + 1, 14);
-            guiGraphics.drawString(this.font, name, left + MARGIN + 20, y + 5,
-                    selected ? this.theme.accent() : this.theme.textPrimary());
-            drawUnreadBadge(guiGraphics, name, left, y);
-            y += 20;
-        }
-
-        for (String key : ChatHub.conversationKeys()) {
-            if (ChatHub.PUBLIC.equals(key) || findPlayer(key) != null) {
-                continue;
-            }
-            boolean selected = key.equals(this.conversation);
-            if (selected) {
-                guiGraphics.fill(left + 3, y, left + SIDEBAR_WIDTH - 3, y + 18, this.theme.panelSelected());
-            }
-            drawPlayerHead(guiGraphics, key, left + MARGIN + 2, y + 1, 14);
-            guiGraphics.drawString(this.font, key, left + MARGIN + 20, y + 5,
-                    selected ? this.theme.accent() : this.theme.textSecondary());
-            drawUnreadBadge(guiGraphics, key, left, y);
-            y += 20;
-        }
-    }
-
-    private void drawUnreadBadge(GuiGraphics guiGraphics, String conversationKey, int left, int y) {
-        int unread = ChatHub.unreadOf(conversationKey);
-        if (unread <= 0) {
-            return;
-        }
+    private void drawUnreadBadge(GuiGraphics guiGraphics, int unread, int right, int y) {
         String text = unread > 99 ? "99+" : String.valueOf(unread);
         int w = Math.max(10, this.font.width(text) + 4);
-        int x = left + SIDEBAR_WIDTH - MARGIN - w;
-        guiGraphics.fill(x, y + 4, x + w, y + 15, 0xFFE04040);
-        guiGraphics.drawString(this.font, text, x + 2, y + 6, 0xFFFFFFFF, false);
+        int x = right - w;
+        fillRoundedRect(guiGraphics, x, y, w, 11, 5, 0xFFE04040);
+        guiGraphics.drawString(this.font, text, x + 2, y + 1, 0xFFFFFFFF, false);
+    }
+
+    /** 超过宽度就用省略号截断。 */
+    private String ellipsize(String text, int maxWidth) {
+        if (text == null) {
+            return "";
+        }
+        if (maxWidth <= 0) {
+            return "";
+        }
+        if (this.font.width(text) <= maxWidth) {
+            return text;
+        }
+        String ellipsis = "…";
+        int ellipsisWidth = this.font.width(ellipsis);
+        StringBuilder buffer = new StringBuilder();
+        for (int i = 0; i < text.length(); ) {
+            int cp = text.codePointAt(i);
+            String next = new String(Character.toChars(cp));
+            if (this.font.width(buffer + next) + ellipsisWidth > maxWidth) {
+                break;
+            }
+            buffer.append(next);
+            i += Character.charCount(cp);
+        }
+        return buffer + ellipsis;
+    }
+
+    /** 会话列表里的时间：当天只显示时分，跨天显示月-日。 */
+    private String formatListTime(long timestamp) {
+        if (timestamp <= 0L) {
+            return "";
+        }
+        Date date = new Date(timestamp);
+        Date now = new Date();
+        SimpleDateFormat f = new SimpleDateFormat(sameDay(date, now) ? "HH:mm" : "MM-dd");
+        return f.format(date);
     }
 
     // ==================== 消息区 ====================
-
-    private int areaX() {
-        return this.panelX + SIDEBAR_WIDTH + MARGIN;
-    }
-
-    private int areaY() {
-        return this.panelY + TITLE_BAR_HEIGHT + MARGIN;
-    }
-
-    private int areaW() {
-        return this.panelW - SIDEBAR_WIDTH - MARGIN * 2;
-    }
-
-    private int areaH() {
-        return this.panelH - TITLE_BAR_HEIGHT - MARGIN * 2 - BAR_HEIGHT - 8;
-    }
 
     private void renderMessages(GuiGraphics guiGraphics, int mouseX, int mouseY) {
         int areaX = areaX();
@@ -442,26 +1057,24 @@ public class XuanXuChatScreen extends Screen {
                     areaX + (areaW - this.font.width(hint)) / 2, areaY + areaH / 2,
                     this.theme.textSecondary());
         } else {
-            int bottom = areaY + areaH;
-            int cursor = bottom;
+            int cursor = areaY + areaH;
             for (int i = messages.size() - 1; i >= 0; i--) {
                 ChatMessage message = messages.get(i);
                 int height = messageHeight(message, areaW);
-                cursor -= height;
                 boolean showTime = i == 0 || message.timestamp() - messages.get(i - 1).timestamp() > 5 * 60_000L;
-                if (showTime) {
-                    cursor -= TIME_SEPARATOR_HEIGHT;
-                }
+                // 整条消息占「时间分隔（可选）+ 气泡」的高度
+                int slotHeight = height + (showTime ? TIME_SEPARATOR_HEIGHT : 0);
+                cursor -= slotHeight;
                 int drawY = cursor + (int) this.scroll;
-                if (drawY + height < areaY) {
+                if (drawY + slotHeight < areaY) {
                     break;
                 }
-                if (drawY <= areaY + areaH) {
-                    if (showTime) {
-                        drawTimeSeparator(guiGraphics, message.timestamp(), areaX, drawY, areaW);
-                    }
-                    drawMessage(guiGraphics, message, areaX, drawY + TIME_SEPARATOR_HEIGHT, areaW);
+                int messageY = drawY;
+                if (showTime) {
+                    drawTimeSeparator(guiGraphics, message.timestamp(), areaX, drawY, areaW);
+                    messageY = drawY + TIME_SEPARATOR_HEIGHT;
                 }
+                drawMessage(guiGraphics, message, areaX, messageY, areaW);
             }
         }
 
@@ -491,10 +1104,11 @@ public class XuanXuChatScreen extends Screen {
         String text = formatTime(timestamp);
         int textW = this.font.width(text);
         int centerX = x + width / 2;
-        int lineY = y + 5;
-        guiGraphics.fill(x + 10, lineY, centerX - textW / 2 - 6, lineY + 1, this.theme.textSecondary());
-        guiGraphics.fill(centerX + textW / 2 + 6, lineY, x + width - 10, lineY + 1, this.theme.textSecondary());
-        guiGraphics.drawString(this.font, text, centerX - textW / 2, y + 1, this.theme.textSecondary());
+        int textY = y + TIME_PAD_ABOVE;
+        int lineY = textY + TIME_TEXT_HEIGHT / 2;
+        guiGraphics.fill(x + 10, lineY, centerX - textW / 2 - 8, lineY + 1, 0x66FFFFFF);
+        guiGraphics.fill(centerX + textW / 2 + 8, lineY, x + width - 10, lineY + 1, 0x66FFFFFF);
+        guiGraphics.drawString(this.font, text, centerX - textW / 2, textY, this.theme.textSecondary());
     }
 
     private String formatTime(long timestamp) {
@@ -514,11 +1128,11 @@ public class XuanXuChatScreen extends Screen {
         if (message.system()) {
             int maxWidth = Math.max(60, areaW - 80);
             int lines = this.font.split(message.content(), maxWidth).size();
-            return lines * LINE + 12;
+            return lines * LINE + 4 + MESSAGE_GAP;
         }
         // 纯表情消息：按表情尺寸计算（避免溢出气泡）
         if (isEmojiMessage(message)) {
-            return LINE + 2 + (EMOJI_SIZE + BUBBLE_PAD * 2) + 8;
+            return LINE + NAME_GAP + (EMOJI_SIZE + BUBBLE_PAD * 2) + MESSAGE_GAP;
         }
         int maxWidth = Math.max(40, areaW - AVATAR - 40);
         int bubbleHeight;
@@ -533,9 +1147,9 @@ public class XuanXuChatScreen extends Screen {
         } else {
             bubbleHeight = this.font.split(message.content(), maxWidth).size() * LINE + BUBBLE_PAD * 2;
         }
-        int height = LINE + 2 + bubbleHeight + 8;
+        int height = LINE + NAME_GAP + bubbleHeight + MESSAGE_GAP;
         if (findImageUrl(message.plainText()) != null) {
-            height += imageDisplayHeight(message.plainText()) + 6;
+            height += IMAGE_GAP + imageDisplayHeight(message.plainText());
         }
         return height;
     }
@@ -605,7 +1219,7 @@ public class XuanXuChatScreen extends Screen {
         if (message.self()) {
             int bubbleX = areaX + areaW - AVATAR - MARGIN - bubbleWidth;
             guiGraphics.drawString(this.font, message.senderName(), bubbleX, nameY, this.theme.accent());
-            int bubbleY = nameY + LINE + 2;
+            int bubbleY = nameY + LINE + NAME_GAP;
             guiGraphics.fill(bubbleX, bubbleY, bubbleX + bubbleWidth, bubbleY + bubbleHeight, this.theme.bubbleSelf());
             drawBubbleContent(guiGraphics, message, lines, mixed, bubbleX + BUBBLE_PAD, bubbleY + BUBBLE_PAD,
                     this.theme.bubbleSelfText());
@@ -615,14 +1229,14 @@ public class XuanXuChatScreen extends Screen {
                         bubbleX + bubbleWidth - this.font.width(badge) - 4, bubbleY + bubbleHeight + 1, 0xFFAAAAAA);
             }
             drawPlayerHead(guiGraphics, message.senderName(), areaX + areaW - AVATAR - 2, bubbleY, AVATAR);
-            drawMessageImage(guiGraphics, message, bubbleX, bubbleY + bubbleHeight + 2);
+            drawMessageImage(guiGraphics, message, bubbleX, bubbleY + bubbleHeight + IMAGE_GAP);
         } else {
             drawPlayerHead(guiGraphics, message.senderName(), areaX + 2, areaY + 2, AVATAR);
             int bubbleX = areaX + AVATAR + 8;
             if (!message.senderName().isEmpty()) {
                 guiGraphics.drawString(this.font, message.senderName(), bubbleX, nameY, this.theme.accent());
             }
-            int bubbleY = nameY + LINE + 2;
+            int bubbleY = nameY + LINE + NAME_GAP;
             guiGraphics.fill(bubbleX, bubbleY, bubbleX + bubbleWidth, bubbleY + bubbleHeight, this.theme.bubbleOthers());
             drawBubbleContent(guiGraphics, message, lines, mixed, bubbleX + BUBBLE_PAD, bubbleY + BUBBLE_PAD,
                     this.theme.textPrimary());
@@ -631,7 +1245,7 @@ public class XuanXuChatScreen extends Screen {
                 guiGraphics.drawString(this.font, badge,
                         bubbleX + bubbleWidth - this.font.width(badge) - 4, bubbleY + bubbleHeight + 1, 0xFFAAAAAA);
             }
-            drawMessageImage(guiGraphics, message, bubbleX, bubbleY + bubbleHeight + 2);
+            drawMessageImage(guiGraphics, message, bubbleX, bubbleY + bubbleHeight + IMAGE_GAP);
         }
     }
 
@@ -924,14 +1538,12 @@ public class XuanXuChatScreen extends Screen {
     // ==================== 输入区 ====================
 
     private void renderInputBar(GuiGraphics guiGraphics) {
-        int y = this.panelY + this.panelH - MARGIN - BAR_HEIGHT;
-        guiGraphics.fill(this.panelX + SIDEBAR_WIDTH, y - 4,
+        // 聊天栏底部整块底色（工具栏 + 输入行）
+        guiGraphics.fill(chatX(), toolBarY() - TOOL_GAP,
                 this.panelX + this.panelW, this.panelY + this.panelH, this.theme.panel());
-        if (this.input != null) {
-            guiGraphics.fill(this.input.getX() - 4, this.input.getY() - 1,
-                    this.input.getX() + this.input.getWidth() + 4,
-                    this.input.getY() + this.input.getHeight() + 1, this.theme.inputBg());
-        }
+        // 输入框底板
+        fillRoundedRect(guiGraphics, inputBoxX(), inputBoxTop(), inputBoxW(), INPUT_BAR_HEIGHT, 5,
+                this.theme.inputBg());
     }
 
     private void insertClipboardImage() {
@@ -978,8 +1590,16 @@ public class XuanXuChatScreen extends Screen {
         return slots;
     }
 
-    private int emojiPanelX() {
-        return this.panelX + SIDEBAR_WIDTH + MARGIN;
+    private int emojiPanelWidth() {
+        return EMOJI_COLUMNS * EMOJI_CELL + 8;
+    }
+
+    /** 表情面板 x：默认贴聊天区左边，聊天区太窄时整体左移，保证不超出面板。 */
+    private int emojiPanelX(int panelWidth) {
+        int x = areaX();
+        int minX = this.panelX + 4;
+        int maxX = this.panelX + this.panelW - panelWidth - 4;
+        return (int) Math.max(minX, Math.min(x, maxX));
     }
 
     /** 表情面板高度（表情变多时自动长高）。 */
@@ -989,17 +1609,17 @@ public class XuanXuChatScreen extends Screen {
         return rows * EMOJI_CELL + 8;
     }
 
-    /** 表情面板 y：贴着工具栏往上摆，但不会超出面板顶部。 */
+    /** 表情面板 y：贴着工具栏往上摆，但不会超出聊天区顶部。 */
     private int emojiPanelY(int panelHeight) {
-        int y = this.panelY + this.panelH - MARGIN - BAR_HEIGHT - panelHeight - 4;
-        return Math.max(this.panelY + TITLE_BAR_HEIGHT + 2, y);
+        int y = toolBarY() - TOOL_GAP - panelHeight;
+        return Math.max(areaY(), y);
     }
 
     private void renderEmojiPanel(GuiGraphics guiGraphics, int mouseX, int mouseY) {
         List<EmojiSlot> slots = emojiSlots();
-        int panelWidth = EMOJI_COLUMNS * EMOJI_CELL + 8;
+        int panelWidth = emojiPanelWidth();
         int panelHeight = emojiPanelHeight();
-        int x = emojiPanelX();
+        int x = emojiPanelX(panelWidth);
         int y = emojiPanelY(panelHeight);
         guiGraphics.fill(x, y, x + panelWidth, y + panelHeight, 0xF0202028);
 
@@ -1017,7 +1637,8 @@ public class XuanXuChatScreen extends Screen {
             } else if (slot.face() != null) {
                 drawFace(guiGraphics, cx + 3, cy + 3, EMOJI_CELL - 10, slot.face());
             } else {
-                guiGraphics.drawString(this.font, slot.kaomoji(), cx + 1, cy + 11, 0xFFFFFFFF);
+                // 颜文字：严格限制在格子里，超出就等比缩小
+                drawScaledString(guiGraphics, slot.kaomoji(), cx + 3, cy + 11, EMOJI_CELL - 8, 0xFFFFFFFF);
             }
         }
     }
@@ -1025,7 +1646,7 @@ public class XuanXuChatScreen extends Screen {
     /** 返回点击到的表情内容，没有则 null。 */
     private String emojiAt(double mouseX, double mouseY) {
         List<EmojiSlot> slots = emojiSlots();
-        int x = emojiPanelX();
+        int x = emojiPanelX(emojiPanelWidth());
         int y = emojiPanelY(emojiPanelHeight());
         for (int i = 0; i < slots.size(); i++) {
             int cx = x + 4 + (i % EMOJI_COLUMNS) * EMOJI_CELL;
@@ -1181,8 +1802,8 @@ public class XuanXuChatScreen extends Screen {
         int itemHeight = 14;
         int width = 140;
         int height = candidates.size() * itemHeight + 4;
-        int x = this.panelX + SIDEBAR_WIDTH + MARGIN + 4;
-        int y = this.panelY + this.panelH - MARGIN - BAR_HEIGHT - height - 4;
+        int x = areaX() + 4;
+        int y = Math.max(areaY(), toolBarY() - TOOL_GAP - height - 4);
 
         guiGraphics.fill(x, y, x + width, y + height, 0xF0282832);
         for (int i = 0; i < candidates.size(); i++) {
@@ -1207,8 +1828,8 @@ public class XuanXuChatScreen extends Screen {
         int itemHeight = 14;
         int width = 140;
         int height = candidates.size() * itemHeight + 4;
-        int x = this.panelX + SIDEBAR_WIDTH + MARGIN + 4;
-        int y = this.panelY + this.panelH - MARGIN - BAR_HEIGHT - height - 4;
+        int x = areaX() + 4;
+        int y = Math.max(areaY(), toolBarY() - TOOL_GAP - height - 4);
         for (int i = 0; i < candidates.size(); i++) {
             int itemY = y + 2 + i * itemHeight;
             if (isInside(mouseX, mouseY, x, itemY, width, itemHeight)) {
@@ -1363,6 +1984,54 @@ public class XuanXuChatScreen extends Screen {
         }
     }
 
+    private void addPrimaryButton(int x, int y, int w, int h, Component label, Runnable action) {
+        this.primaryButtons.add(new PrimaryButton(x, y, w, h, label, action));
+    }
+
+    private void addIconButton(int x, int y, ToolIcon icon, Runnable action) {
+        this.iconButtons.add(new IconButton(x, y, 20, TOOL_BAR_HEIGHT, icon, icon.label, action));
+    }
+
+    /** 工具栏图标按钮。 */
+    private void renderIconButtons(GuiGraphics guiGraphics, int mouseX, int mouseY) {
+        for (IconButton button : this.iconButtons) {
+            boolean hover = isInside(mouseX, mouseY, button.x(), button.y(), button.w(), button.h());
+            if (hover) {
+                fillRoundedRect(guiGraphics, button.x(), button.y(), button.w(), button.h(), 4, this.theme.buttonHover());
+            }
+            int color = hover ? this.theme.accent() : this.theme.textSecondary();
+            drawToolIcon(guiGraphics, button.icon(), button.x() + button.w() / 2, button.y() + button.h() / 2,
+                    color, hover ? this.theme.buttonHover() : this.theme.panel());
+        }
+    }
+
+    /** 悬停时在按钮上方显示名称。 */
+    private void renderIconTooltips(GuiGraphics guiGraphics, int mouseX, int mouseY) {
+        for (IconButton button : this.iconButtons) {
+            if (isInside(mouseX, mouseY, button.x(), button.y(), button.w(), button.h())) {
+                String label = button.label();
+                int width = this.font.width(label) + 10;
+                int x = button.x() + button.w() / 2 - width / 2;
+                x = Math.max(this.panelX + 4, Math.min(x, this.panelX + this.panelW - width - 4));
+                drawTooltipLabel(guiGraphics, label, x, button.y() - 17);
+                return;
+            }
+        }
+    }
+
+    /** 蓝色主按钮（发送）。 */
+    private void renderPrimaryButtons(GuiGraphics guiGraphics, int mouseX, int mouseY) {
+        for (PrimaryButton button : this.primaryButtons) {
+            boolean hover = isInside(mouseX, mouseY, button.x(), button.y(), button.w(), button.h());
+            fillRoundedRect(guiGraphics, button.x(), button.y(), button.w(), button.h(), 5,
+                    hover ? SEND_BUTTON_HOVER : SEND_BUTTON_COLOR);
+            int textWidth = this.font.width(button.label());
+            guiGraphics.drawString(this.font, button.label(),
+                    button.x() + (button.w() - textWidth) / 2,
+                    button.y() + (button.h() - 8) / 2, 0xFFFFFFFF);
+        }
+    }
+
     /** 绘制圆角矩形（逐行内缩近似）。 */
     private void fillRoundedRect(GuiGraphics guiGraphics, int x, int y, int w, int h, int radius, int color) {
         int r = Math.max(0, Math.min(radius, Math.min(w, h) / 2));
@@ -1393,7 +2062,7 @@ public class XuanXuChatScreen extends Screen {
 
         if (this.emojiOpen) {
             String emoji = emojiAt(vx, vy);
-            if (emoji != null) {
+            if (emoji != null && this.input != null) {
                 this.input.insertText(emoji);
                 return true;
             }
@@ -1401,10 +2070,27 @@ public class XuanXuChatScreen extends Screen {
             return true;
         }
 
-        for (FlatButton flatButton : this.flatButtons) {
-            if (isInside(vx, vy, flatButton.x(), flatButton.y(), flatButton.w(), flatButton.h())) {
-                flatButton.action().run();
-                return true;
+        // 聊天区专属按钮只在「消息」栏目下可点
+        if (this.activeTab == NavTab.MESSAGES) {
+            for (FlatButton flatButton : this.flatButtons) {
+                if (isInside(vx, vy, flatButton.x(), flatButton.y(), flatButton.w(), flatButton.h())) {
+                    flatButton.action().run();
+                    return true;
+                }
+            }
+
+            for (PrimaryButton primaryButton : this.primaryButtons) {
+                if (isInside(vx, vy, primaryButton.x(), primaryButton.y(), primaryButton.w(), primaryButton.h())) {
+                    primaryButton.action().run();
+                    return true;
+                }
+            }
+
+            for (IconButton iconButton : this.iconButtons) {
+                if (isInside(vx, vy, iconButton.x(), iconButton.y(), iconButton.w(), iconButton.h())) {
+                    iconButton.action().run();
+                    return true;
+                }
             }
         }
 
@@ -1433,13 +2119,38 @@ public class XuanXuChatScreen extends Screen {
             this.headMenuPlayer = null;
         }
 
-        int sidebarItem = sidebarItemAt(vx, vy);
-        if (sidebarItem >= 0) {
-            selectSidebarItem(sidebarItem);
+        // 左侧功能导航栏
+        int navItem = navItemAt(vx, vy);
+        if (navItem >= 0) {
+            NavTab tab = NavTab.values()[navItem];
+            if (tab != this.activeTab) {
+                this.activeTab = tab;
+                this.emojiOpen = false;
+                this.atQuery = null;
+                this.messageMenuTarget = null;
+                this.headMenuPlayer = null;
+                if (this.input != null) {
+                    if (tab == NavTab.MESSAGES) {
+                        this.input.setFocused(true);
+                    } else {
+                        this.input.setFocused(false);
+                        this.setFocused(null);
+                    }
+                }
+            }
             return true;
         }
 
-        ChatMessage messageAt = messageAt(vx, vy);
+        // 中间会话列表（只在「消息」栏目下生效）
+        if (this.activeTab == NavTab.MESSAGES) {
+            int conversationItem = conversationItemAt(vx, vy);
+            if (conversationItem >= 0) {
+                selectConversation(conversationItem);
+                return true;
+            }
+        }
+
+        ChatMessage messageAt = this.activeTab == NavTab.MESSAGES ? messageAt(vx, vy) : null;
         if (messageAt != null) {
             if (button == 1) {
                 if (isOnAvatar(messageAt, vx, vy)) {
@@ -1460,7 +2171,35 @@ public class XuanXuChatScreen extends Screen {
             return true;
         }
 
+        if (clickIntoTextBoxes(vx, vy, button)) {
+            return true;
+        }
+
         return super.mouseClicked(vx, vy, button);
+    }
+
+    /** 点到底板区域（比 EditBox 控件本身大）时也把焦点交给对应输入框。 */
+    private boolean clickIntoTextBoxes(double mouseX, double mouseY, int button) {
+        if (this.searchBox != null
+                && isInside(mouseX, mouseY, listX() + MARGIN, searchBoxTop(),
+                        listWidth() - MARGIN * 2, SEARCH_BOX_HEIGHT)) {
+            this.setFocused(this.searchBox);
+            if (this.input != null) {
+                this.input.setFocused(false);
+            }
+            super.mouseClicked(mouseX, mouseY, button);   // 让控件自己定位光标
+            return true;
+        }
+        if (this.input != null && !this.collapsed && this.activeTab == NavTab.MESSAGES
+                && isInside(mouseX, mouseY, inputBoxX(), inputBoxTop(), inputBoxW(), INPUT_BAR_HEIGHT)) {
+            this.setFocused(this.input);
+            if (this.searchBox != null) {
+                this.searchBox.setFocused(false);
+            }
+            super.mouseClicked(mouseX, mouseY, button);
+            return true;
+        }
+        return false;
     }
 
     private void handleMessageMenuAction(int index) {
@@ -1479,70 +2218,6 @@ public class XuanXuChatScreen extends Screen {
         this.messageMenuTarget = null;
     }
 
-    private int sidebarItemAt(double mouseX, double mouseY) {
-        int left = this.panelX;
-        if (mouseX < left || mouseX > left + SIDEBAR_WIDTH) {
-            return -1;
-        }
-        int y = sidebarItemsTop();
-        if (isInside(mouseX, mouseY, left, y, SIDEBAR_WIDTH, 18)) {
-            return 0;
-        }
-        y += 22;
-        for (int i = 0; i < this.cachedPlayers.size(); i++) {
-            if (isInside(mouseX, mouseY, left, y, SIDEBAR_WIDTH, 18)) {
-                return i + 1;
-            }
-            y += 20;
-        }
-        int offset = this.cachedPlayers.size() + 1;
-        for (String key : ChatHub.conversationKeys()) {
-            if (ChatHub.PUBLIC.equals(key) || findPlayer(key) != null) {
-                continue;
-            }
-            if (isInside(mouseX, mouseY, left, y, SIDEBAR_WIDTH, 18)) {
-                return offset + 1;
-            }
-            y += 20;
-            offset++;
-        }
-        return -1;
-    }
-
-    private void selectSidebarItem(int index) {
-        if (index == 0) {
-            this.conversation = ChatHub.PUBLIC;
-        } else if (index - 1 < this.cachedPlayers.size()) {
-            this.conversation = this.cachedPlayers.get(index - 1).getProfile().getName();
-        } else {
-            int offset = index - (this.cachedPlayers.size() + 1);
-            List<String> offline = new ArrayList<>();
-            for (String key : ChatHub.conversationKeys()) {
-                if (!ChatHub.PUBLIC.equals(key) && findPlayer(key) == null) {
-                    offline.add(key);
-                }
-            }
-            if (offset >= 0 && offset < offline.size()) {
-                this.conversation = offline.get(offset - 1);
-            }
-        }
-        this.conversationOpen = true;
-        this.scroll = 0;
-        // 收起状态下点会话 → 重新展开右侧面板（需要重建控件）
-        boolean wasCollapsed = this.collapsed;
-        this.collapsed = false;
-        ChatHub.setOpenConversation(this.conversation);
-        rememberInputState();
-        if (wasCollapsed) {
-            this.rebuildWidgets();
-            if (this.input != null) {
-                this.input.setFocused(true);
-            }
-        } else if (this.input != null) {
-            this.input.setEditable(true);
-        }
-    }
-
     private ChatMessage messageAt(double mouseX, double mouseY) {
         if (!this.conversationOpen) {
             return null;
@@ -1555,18 +2230,16 @@ public class XuanXuChatScreen extends Screen {
             return null;
         }
         List<ChatMessage> messages = filterMessages(ChatHub.messages(this.conversation));
-        int bottom = areaY + areaH;
-        int cursor = bottom;
+        int cursor = areaY + areaH;
         for (int i = messages.size() - 1; i >= 0; i--) {
             ChatMessage message = messages.get(i);
             int height = messageHeight(message, areaW);
-            cursor -= height;
             boolean showTime = i == 0 || message.timestamp() - messages.get(i - 1).timestamp() > 5 * 60_000L;
-            if (showTime) {
-                cursor -= TIME_SEPARATOR_HEIGHT;
-            }
+            int slotHeight = height + (showTime ? TIME_SEPARATOR_HEIGHT : 0);
+            cursor -= slotHeight;
             int drawY = cursor + (int) this.scroll;
-            if (mouseY >= drawY && mouseY < drawY + height) {
+            int messageY = drawY + (showTime ? TIME_SEPARATOR_HEIGHT : 0);
+            if (mouseY >= messageY && mouseY < messageY + height) {
                 return message;
             }
         }
@@ -1579,23 +2252,21 @@ public class XuanXuChatScreen extends Screen {
         int areaY = areaY();
         int areaH = areaH();
         List<ChatMessage> messages = filterMessages(ChatHub.messages(this.conversation));
-        int bottom = areaY + areaH;
-        int cursor = bottom;
+        int cursor = areaY + areaH;
         for (int i = messages.size() - 1; i >= 0; i--) {
             ChatMessage m = messages.get(i);
             int height = messageHeight(m, areaW);
-            cursor -= height;
             boolean showTime = i == 0 || m.timestamp() - messages.get(i - 1).timestamp() > 5 * 60_000L;
-            if (showTime) {
-                cursor -= TIME_SEPARATOR_HEIGHT;
-            }
+            int slotHeight = height + (showTime ? TIME_SEPARATOR_HEIGHT : 0);
+            cursor -= slotHeight;
             int drawY = cursor + (int) this.scroll;
+            int messageY = drawY + (showTime ? TIME_SEPARATOR_HEIGHT : 0);
             if (m == message) {
                 int headX = m.self() ? areaX + areaW - AVATAR - 2 : areaX + 2;
-                int headY = drawY + LINE + 2;
+                int headY = messageY + LINE + NAME_GAP;
                 return isInside(mouseX, mouseY, headX, headY, AVATAR, AVATAR);
             }
-            if (drawY + height < areaY) {
+            if (drawY + slotHeight < areaY) {
                 break;
             }
         }
@@ -1636,8 +2307,8 @@ public class XuanXuChatScreen extends Screen {
             this.onClose();
             return true;
         }
-        // 右侧已收起：没有输入框，只保留关闭快捷键
-        if (this.input == null) {
+        // 非「消息」栏目 / 聊天区已收起：没有输入框
+        if (this.input == null || this.activeTab != NavTab.MESSAGES) {
             return super.keyPressed(keyCode, scanCode, modifiers);
         }
         // 焦点在搜索框时，回车只用来回到聊天输入框，不要误发消息
