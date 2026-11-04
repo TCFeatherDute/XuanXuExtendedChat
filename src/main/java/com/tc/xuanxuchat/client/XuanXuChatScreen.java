@@ -80,6 +80,9 @@ public class XuanXuChatScreen extends Screen {
     /** 表情面板每行列数、单格图片绘制尺寸。 */
     private static final int EMOJI_COLUMNS = 4;
     private static final int EMOJI_PANEL_SIZE = 24;
+    /** 分组标签行高、网格最多显示的行数。 */
+    private static final int EMOJI_TAB_HEIGHT = 13;
+    private static final int EMOJI_MAX_ROWS = 8;
     /** 消息气泡内表情的绘制尺寸。 */
     private static final int EMOJI_SIZE = 18;
     /** 窗口顶部标题栏高度。 */
@@ -177,6 +180,9 @@ public class XuanXuChatScreen extends Screen {
     private String conversation = ChatHub.PUBLIC;
     private double scroll;
     private boolean emojiOpen;
+    /** 表情面板当前分组下标与竖向滚动偏移（像素）。 */
+    private int emojiGroupIndex;
+    private int emojiScroll;
     private String atQuery;
 
     /** 当前选中的左侧导航栏目。 */
@@ -1575,19 +1581,68 @@ public class XuanXuChatScreen extends Screen {
         }
     }
 
-    /** 面板格子：内置黄豆表情 + 自定义表情图片 + 颜文字，全部平铺在一起。 */
-    private List<EmojiSlot> emojiSlots() {
-        List<EmojiSlot> slots = new ArrayList<>();
+    /** 表情面板的一个分组（黄豆 / 颜文字 / 某个前缀的自定义表情）。 */
+    private record EmojiGroup(String name, List<EmojiSlot> slots) {
+    }
+
+    /** 自定义表情的文件名前缀 → 分组显示名。 */
+    private static String groupLabel(String prefix) {
+        return switch (prefix) {
+            case "tieba" -> "贴吧";
+            case "weibo" -> "微博";
+            case "bb", "bilibili" -> "B站";
+            case "alus" -> "阿鲁";
+            case "bmoji" -> "BMO";
+            case "coolapk" -> "酷安";
+            case "soul", "soul-emoji" -> "灵魂";
+            case "tw", "tw-emoji" -> "Twemoji";
+            default -> prefix;
+        };
+    }
+
+    /**
+     * 自定义表情按文件名前缀分组：{@code tieba_agree.png} → 「贴吧」组；
+     * 文件名里没有下划线的统一归到「自定义」。
+     */
+    private static String customGroupPrefix(String emojiName) {
+        int idx = emojiName.indexOf('_');
+        return idx > 0 ? emojiName.substring(0, idx) : "自定义";
+    }
+
+    /** 表情面板全部分组：黄豆、颜文字，然后是按前缀排序的自定义表情组。 */
+    private List<EmojiGroup> emojiGroups() {
+        List<EmojiGroup> groups = new ArrayList<>();
+
+        List<EmojiSlot> faces = new ArrayList<>();
         for (Face face : Face.values()) {
-            slots.add(new EmojiSlot(face, null, null));
+            faces.add(new EmojiSlot(face, null, null));
         }
+        groups.add(new EmojiGroup("黄豆", faces));
+
+        List<EmojiSlot> kaomoji = new ArrayList<>();
+        for (String text : KAOMOJI) {
+            kaomoji.add(new EmojiSlot(null, null, text));
+        }
+        groups.add(new EmojiGroup("颜文字", kaomoji));
+
+        java.util.TreeMap<String, List<EmojiSlot>> byPrefix = new java.util.TreeMap<>();
         for (ChatEmojiLoader.EmojiEntry entry : ChatEmojiLoader.emojis()) {
-            slots.add(new EmojiSlot(null, entry, null));
+            String prefix = customGroupPrefix(entry.name());
+            byPrefix.computeIfAbsent(prefix, k -> new ArrayList<>()).add(new EmojiSlot(null, entry, null));
         }
-        for (String kaomoji : KAOMOJI) {
-            slots.add(new EmojiSlot(null, null, kaomoji));
+        for (java.util.Map.Entry<String, List<EmojiSlot>> entry : byPrefix.entrySet()) {
+            groups.add(new EmojiGroup(groupLabel(entry.getKey()), entry.getValue()));
         }
-        return slots;
+        return groups;
+    }
+
+    /** 当前选中的分组（越界时回落到黄豆组）。 */
+    private EmojiGroup currentEmojiGroup() {
+        List<EmojiGroup> groups = emojiGroups();
+        if (this.emojiGroupIndex < 0 || this.emojiGroupIndex >= groups.size()) {
+            this.emojiGroupIndex = 0;
+        }
+        return groups.get(this.emojiGroupIndex);
     }
 
     private int emojiPanelWidth() {
@@ -1602,11 +1657,52 @@ public class XuanXuChatScreen extends Screen {
         return (int) Math.max(minX, Math.min(x, maxX));
     }
 
-    /** 表情面板高度（表情变多时自动长高）。 */
+    /** 分组标签行的总高度（标签放不下会换行）。 */
+    private int emojiTabAreaHeight(int panelWidth) {
+        List<EmojiGroup> groups = emojiGroups();
+        if (groups.size() <= 1) {
+            return 0;
+        }
+        int perRow = Math.max(1, panelWidth - 8);
+        int used = 0;
+        int rows = 1;
+        for (EmojiGroup group : groups) {
+            int tabWidth = this.font.width(group.name()) + 10;
+            if (used > 0 && used + tabWidth > perRow) {
+                rows++;
+                used = 0;
+            }
+            used += tabWidth + 2;
+        }
+        return rows * (EMOJI_TAB_HEIGHT + 2) + 2;
+    }
+
+    /** 网格可见行数：受聊天区可用高度限制。 */
+    private int emojiVisibleRows(int panelWidth) {
+        int available = toolBarY() - TOOL_GAP - areaY() - 8 - emojiTabAreaHeight(panelWidth);
+        int fit = Math.max(1, available / EMOJI_CELL);
+        int totalRows = emojiRowCount();
+        return Math.min(Math.min(fit, EMOJI_MAX_ROWS), totalRows);
+    }
+
+    private int emojiRowCount() {
+        int slots = currentEmojiGroup().slots().size();
+        return Math.max(1, (slots + EMOJI_COLUMNS - 1) / EMOJI_COLUMNS);
+    }
+
+    /** 当前分组最大可滚动像素（0 表示不需要滚动）。 */
+    private int emojiMaxScroll(int panelWidth) {
+        return Math.max(0, (emojiRowCount() - emojiVisibleRows(panelWidth)) * EMOJI_CELL);
+    }
+
+    private int emojiScrollPx(int panelWidth) {
+        this.emojiScroll = (int) Math.max(0, Math.min(emojiMaxScroll(panelWidth), this.emojiScroll));
+        return this.emojiScroll;
+    }
+
     private int emojiPanelHeight() {
-        int slots = emojiSlots().size();
-        int rows = Math.max(1, (slots + EMOJI_COLUMNS - 1) / EMOJI_COLUMNS);
-        return rows * EMOJI_CELL + 8;
+        int panelWidth = emojiPanelWidth();
+        return emojiTabAreaHeight(panelWidth) + emojiVisibleRows(panelWidth) * EMOJI_CELL + 8;
     }
 
     /** 表情面板 y：贴着工具栏往上摆，但不会超出聊天区顶部。 */
@@ -1615,21 +1711,59 @@ public class XuanXuChatScreen extends Screen {
         return Math.max(areaY(), y);
     }
 
+    /** 网格区域顶部（分组标签下方）。 */
+    private int emojiGridTop(int panelY, int panelWidth) {
+        return panelY + emojiTabAreaHeight(panelWidth);
+    }
+
     private void renderEmojiPanel(GuiGraphics guiGraphics, int mouseX, int mouseY) {
-        List<EmojiSlot> slots = emojiSlots();
+        List<EmojiGroup> groups = emojiGroups();
+        EmojiGroup current = currentEmojiGroup();
         int panelWidth = emojiPanelWidth();
         int panelHeight = emojiPanelHeight();
         int x = emojiPanelX(panelWidth);
         int y = emojiPanelY(panelHeight);
+        int tabArea = emojiTabAreaHeight(panelWidth);
         guiGraphics.fill(x, y, x + panelWidth, y + panelHeight, 0xF0202028);
 
+        // 分组标签
+        if (tabArea > 0) {
+            int tx = x + 4;
+            int ty = y + 3;
+            for (int i = 0; i < groups.size(); i++) {
+                EmojiGroup group = groups.get(i);
+                int tabWidth = this.font.width(group.name()) + 10;
+                if (tx > x + 4 && tx + tabWidth > x + panelWidth - 4) {
+                    tx = x + 4;
+                    ty += EMOJI_TAB_HEIGHT + 2;
+                }
+                boolean active = group == current;
+                boolean hover = isInside(mouseX, mouseY, tx, ty, tabWidth, EMOJI_TAB_HEIGHT);
+                int background = active ? this.theme.accent() : (hover ? this.theme.buttonHover() : this.theme.buttonBg());
+                fillRoundedRect(guiGraphics, tx, ty, tabWidth, EMOJI_TAB_HEIGHT, 3, background);
+                guiGraphics.drawString(this.font, group.name(), tx + 5, ty + 2,
+                        active ? 0xFFFFFFFF : this.theme.textPrimary());
+                tx += tabWidth + 2;
+            }
+        }
+
+        // 网格（裁剪 + 滚动）
+        int gridTop = y + tabArea;
+        int visibleRows = emojiVisibleRows(panelWidth);
+        int gridHeight = visibleRows * EMOJI_CELL;
+        int scroll = emojiScrollPx(panelWidth);
+        guiGraphics.enableScissor(x, gridTop, x + panelWidth, gridTop + gridHeight);
+        List<EmojiSlot> slots = current.slots();
         for (int i = 0; i < slots.size(); i++) {
             int cx = x + 4 + (i % EMOJI_COLUMNS) * EMOJI_CELL;
-            int cy = y + 4 + (i / EMOJI_COLUMNS) * EMOJI_CELL;
+            int cy = gridTop + (i / EMOJI_COLUMNS) * EMOJI_CELL - scroll;
+            if (cy + EMOJI_CELL <= gridTop || cy >= gridTop + gridHeight) {
+                continue;   // 完全在可视区外，跳过
+            }
+            EmojiSlot slot = slots.get(i);
             if (isInside(mouseX, mouseY, cx, cy, EMOJI_CELL - 4, EMOJI_CELL - 4)) {
                 guiGraphics.fill(cx, cy, cx + EMOJI_CELL - 4, cy + EMOJI_CELL - 4, 0x40FFFFFF);
             }
-            EmojiSlot slot = slots.get(i);
             if (slot.emoji() != null) {
                 ChatEmojiLoader.EmojiEntry entry = slot.emoji();
                 guiGraphics.blit(entry.location(), cx + 2, cy + 2, EMOJI_PANEL_SIZE, EMOJI_PANEL_SIZE, 0, 0,
@@ -1641,16 +1775,67 @@ public class XuanXuChatScreen extends Screen {
                 drawScaledString(guiGraphics, slot.kaomoji(), cx + 3, cy + 11, EMOJI_CELL - 8, 0xFFFFFFFF);
             }
         }
+        guiGraphics.disableScissor();
+
+        // 滚动条
+        int maxScroll = emojiMaxScroll(panelWidth);
+        if (maxScroll > 0) {
+            int trackTop = gridTop;
+            int trackHeight = gridHeight;
+            int totalPx = emojiRowCount() * EMOJI_CELL;
+            int barHeight = Math.max(10, trackHeight * trackHeight / totalPx);
+            int barTop = trackTop + (trackHeight - barHeight) * scroll / maxScroll;
+            int barX = x + panelWidth - 3;
+            guiGraphics.fill(barX, trackTop, barX + 2, trackTop + trackHeight, 0x30FFFFFF);
+            guiGraphics.fill(barX, barTop, barX + 2, barTop + barHeight, 0xA0FFFFFF);
+        }
+    }
+
+    /** 点击到的分组标签下标，没有则 -1。 */
+    private int emojiGroupAt(double mouseX, double mouseY) {
+        int panelWidth = emojiPanelWidth();
+        int tabArea = emojiTabAreaHeight(panelWidth);
+        if (tabArea <= 0) {
+            return -1;
+        }
+        int x = emojiPanelX(panelWidth);
+        int y = emojiPanelY(emojiPanelHeight());
+        if (!isInside(mouseX, mouseY, x, y, panelWidth, tabArea)) {
+            return -1;
+        }
+        List<EmojiGroup> groups = emojiGroups();
+        int tx = x + 4;
+        int ty = y + 3;
+        for (int i = 0; i < groups.size(); i++) {
+            EmojiGroup group = groups.get(i);
+            int tabWidth = this.font.width(group.name()) + 10;
+            if (tx > x + 4 && tx + tabWidth > x + panelWidth - 4) {
+                tx = x + 4;
+                ty += EMOJI_TAB_HEIGHT + 2;
+            }
+            if (isInside(mouseX, mouseY, tx, ty, tabWidth, EMOJI_TAB_HEIGHT)) {
+                return i;
+            }
+            tx += tabWidth + 2;
+        }
+        return -1;
     }
 
     /** 返回点击到的表情内容，没有则 null。 */
     private String emojiAt(double mouseX, double mouseY) {
-        List<EmojiSlot> slots = emojiSlots();
-        int x = emojiPanelX(emojiPanelWidth());
+        List<EmojiSlot> slots = currentEmojiGroup().slots();
+        int panelWidth = emojiPanelWidth();
+        int x = emojiPanelX(panelWidth);
         int y = emojiPanelY(emojiPanelHeight());
+        int gridTop = emojiGridTop(y, panelWidth);
+        int gridHeight = emojiVisibleRows(panelWidth) * EMOJI_CELL;
+        if (!isInside(mouseX, mouseY, x, gridTop, panelWidth, gridHeight)) {
+            return null;
+        }
+        int scroll = emojiScrollPx(panelWidth);
         for (int i = 0; i < slots.size(); i++) {
             int cx = x + 4 + (i % EMOJI_COLUMNS) * EMOJI_CELL;
-            int cy = y + 4 + (i / EMOJI_COLUMNS) * EMOJI_CELL;
+            int cy = gridTop + (i / EMOJI_COLUMNS) * EMOJI_CELL - scroll;
             if (isInside(mouseX, mouseY, cx, cy, EMOJI_CELL - 4, EMOJI_CELL - 4)) {
                 return slots.get(i).insertText();
             }
@@ -2061,6 +2246,15 @@ public class XuanXuChatScreen extends Screen {
         double vy = mouseY;
 
         if (this.emojiOpen) {
+            // 先判断分组标签，再判断表情格子
+            int group = emojiGroupAt(vx, vy);
+            if (group >= 0) {
+                if (group != this.emojiGroupIndex) {
+                    this.emojiGroupIndex = group;
+                    this.emojiScroll = 0;
+                }
+                return true;
+            }
             String emoji = emojiAt(vx, vy);
             if (emoji != null && this.input != null) {
                 this.input.insertText(emoji);
@@ -2275,6 +2469,14 @@ public class XuanXuChatScreen extends Screen {
 
     @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
+        // 表情面板打开且鼠标在面板上：滚轮滚表情，不要滚聊天记录
+        if (this.emojiOpen && !this.collapsed && this.activeTab == NavTab.MESSAGES
+                && isInside(mouseX, mouseY, this.panelX, this.panelY, this.panelW, this.panelH)) {
+            int panelWidth = emojiPanelWidth();
+            int maxScroll = emojiMaxScroll(panelWidth);
+            this.emojiScroll = (int) Math.max(0, Math.min(maxScroll, this.emojiScroll - scrollY * EMOJI_CELL));
+            return true;
+        }
         if (this.collapsed || !this.conversationOpen) {
             return super.mouseScrolled(mouseX, mouseY, scrollX, scrollY);
         }
