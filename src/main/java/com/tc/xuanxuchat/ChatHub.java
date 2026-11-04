@@ -37,9 +37,18 @@ public final class ChatHub {
     private static final Map<String, List<ChatMessage>> CONVERSATIONS = new java.util.LinkedHashMap<>();
     private static final Map<String, Integer> UNREAD = new HashMap<>();
 
+    /** 已发出但还没收到服务端回显的消息，用于精确去重。 */
+    private static final List<PendingEcho> PENDING_ECHO = new ArrayList<>();
+    /** 超过这个时间的待回显记录直接丢弃（服务器没回显 / 消息被拦下）。 */
+    private static final long ECHO_TIMEOUT_MS = 30_000L;
+
     private static String sessionId;
     /** 当前打开中的会话（用于未读统计）。 */
     private static String openConversation;
+
+    /** 一条等待服务端回显的自发消息。 */
+    private record PendingEcho(String conversation, String text, long timestamp) {
+    }
 
     private ChatHub() {
     }
@@ -54,6 +63,7 @@ public final class ChatHub {
             CONVERSATIONS.clear();
             CONVERSATIONS.putAll(ChatHistoryStore.load(current));
             UNREAD.clear();
+            PENDING_ECHO.clear();
         }
     }
 
@@ -72,7 +82,12 @@ public final class ChatHub {
         // 1) 自己发出的私聊 → 归入与目标玩家的会话
         Matcher matcher = WHISPER_TO.matcher(plain);
         if (matcher.matches()) {
-            add(ChatMessage.player(selfName, matcher.group(1).trim(), message, matcher.group(2), true));
+            String target = matcher.group(1).trim();
+            String body = matcher.group(2);
+            if (consumeEcho(target, body)) {
+                return;
+            }
+            add(ChatMessage.player(selfName, target, message, body, true));
             return;
         }
         // 2) 收到的私聊 → 归入与发送者的会话
@@ -85,7 +100,13 @@ public final class ChatHub {
         matcher = PLAYER_CHAT.matcher(plain);
         if (matcher.matches()) {
             String sender = matcher.group(1);
-            add(ChatMessage.player(sender, PUBLIC, message, matcher.group(2), sender.equals(selfName)));
+            String body = matcher.group(2);
+            boolean self = sender.equals(selfName);
+            // 自己发的消息已经在发送瞬间本地显示过，服务端回显直接丢弃
+            if (self && consumeEcho(PUBLIC, body)) {
+                return;
+            }
+            add(ChatMessage.player(sender, PUBLIC, message, body, self));
             return;
         }
         // 4) 系统消息
@@ -113,6 +134,53 @@ public final class ChatHub {
                 1
         );
         add(message);
+        // 记下这次发送，等服务端回显时把它丢掉（避免同一条消息显示两次）
+        PENDING_ECHO.add(new PendingEcho(message.conversation(), text, System.currentTimeMillis()));
+    }
+
+    /**
+     * 本地记录一条自己发出的命令。
+     * <p>
+     * 命令不会从服务端回显（只有执行结果），所以在公共频道里补一条只自己可见的记录，
+     * 让玩家能看到「我刚才发了什么命令」。这段消息不会发到服务器，别人看不到。
+     */
+    public static void receiveSelfCommand(String text) {
+        ensureSessionLoaded();
+        Minecraft mc = Minecraft.getInstance();
+        String name = mc.player != null ? mc.player.getGameProfile().getName() : "我";
+        add(new ChatMessage(
+                mc.player != null ? mc.player.getUUID() : null,
+                name,
+                PUBLIC,
+                Component.literal(text),
+                text,
+                System.currentTimeMillis(),
+                true,
+                false,
+                1
+        ));
+    }
+
+    /**
+     * 检查这条消息是不是自己刚发的那条的服务端回显。
+     * <p>
+     * 命中则移除待回显记录并返回 true，调用方应丢弃该消息。
+     * 相比「与上一条消息比较」，这样即使中间插入了别人的消息也不会重复显示。
+     */
+    private static boolean consumeEcho(String conversation, String text) {
+        if (PENDING_ECHO.isEmpty()) {
+            return false;
+        }
+        long now = System.currentTimeMillis();
+        PENDING_ECHO.removeIf(pending -> now - pending.timestamp() > ECHO_TIMEOUT_MS);
+        for (int i = PENDING_ECHO.size() - 1; i >= 0; i--) {
+            PendingEcho pending = PENDING_ECHO.get(i);
+            if (pending.conversation().equals(conversation) && pending.text().equals(text)) {
+                PENDING_ECHO.remove(i);
+                return true;
+            }
+        }
+        return false;
     }
 
     private static void add(ChatMessage message) {

@@ -34,11 +34,17 @@ public class XuanXuChatScreen extends Screen {
     private static final int SIDEBAR_WIDTH = 140;
     private static final int MARGIN = 8;
     private static final int BAR_HEIGHT = 18;
+    /** 侧边栏搜索框高度，以及它相对「会话」标题的下移量。 */
+    private static final int SEARCH_BOX_HEIGHT = 16;
+    private static final int SEARCH_BOX_TOP_OFFSET = 13;
     private static final int AVATAR = 16;
     private static final int LINE = 9;
     private static final int BUBBLE_PAD = 6;
     private static final int TIME_SEPARATOR_HEIGHT = 14;
     private static final int EMOJI_CELL = 34;
+    /** 表情面板每行列数、单格图片绘制尺寸。 */
+    private static final int EMOJI_COLUMNS = 4;
+    private static final int EMOJI_PANEL_SIZE = 24;
     /** 消息气泡内表情的绘制尺寸。 */
     private static final int EMOJI_SIZE = 18;
     /** 窗口顶部标题栏高度。 */
@@ -71,13 +77,22 @@ public class XuanXuChatScreen extends Screen {
     private static final int FACE_BLUSH = 0xFFFF9E9E;
 
     private final String initialText;
-    private ChatTheme theme = ChatTheme.DARK;
+    /** 主题固定深色（浅色主题先下线，配色问题太多）。 */
+    private final ChatTheme theme = ChatTheme.DARK;
 
     private EditBox input;
     private EditBox searchBox;
 
     /** 是否已打开某个会话（false 时右侧只显示提示，点击左侧会话才展开）。 */
     private boolean conversationOpen;
+
+    /** 右侧面板是否已收起（收起到只剩会话列表）。 */
+    private boolean collapsed;
+
+    /** 输入框草稿：重建控件（切主题 / 收起展开）时保留，否则打了一半的字会丢。 */
+    private String draft;
+    /** 搜索框草稿。 */
+    private String searchDraft = "";
 
     private String conversation = ChatHub.PUBLIC;
     private double scroll;
@@ -93,7 +108,6 @@ public class XuanXuChatScreen extends Screen {
     private double messageMenuY;
 
     private List<PlayerInfo> cachedPlayers = List.of();
-    private int lastSeenMessageCount;
 
     private final List<FlatButton> flatButtons = new ArrayList<>();
 
@@ -109,9 +123,25 @@ public class XuanXuChatScreen extends Screen {
     private record FlatButton(int x, int y, int w, int h, Component label, Runnable action) {
     }
 
+    /**
+     * 气泡里的一个渲染段：普通文字、内置黄豆表情、或自定义表情图片。
+     *
+     * @param text  文字内容；表情段为 null
+     * @param face  内置黄豆表情；否则 null
+     * @param emoji 自定义表情图片；否则 null
+     * @param x     在本行内的横坐标偏移
+     */
+    private record Segment(String text, Face face, ChatEmojiLoader.EmojiEntry emoji, int x) {
+    }
+
+    /** 混排后的一行：若干段 + 行宽 + 行高（含表情的行更高）。 */
+    private record MessageLine(List<Segment> segments, int width, int height) {
+    }
+
     public XuanXuChatScreen(String initialText) {
         super(Component.literal("玄墟聊天"));
         this.initialText = initialText == null ? "" : initialText;
+        this.draft = this.initialText;
     }
 
     // ==================== 初始化 ====================
@@ -119,22 +149,29 @@ public class XuanXuChatScreen extends Screen {
     @Override
     protected void init() {
         ChatHub.ensureSessionLoaded();
-        ChatHub.setOpenConversation(this.conversation);
+        ChatHub.setOpenConversation(this.conversationOpen && !this.collapsed ? this.conversation : null);
         this.cachedPlayers = collectOnlinePlayers();
-        this.lastSeenMessageCount = ChatHub.messages(this.conversation).size();
         this.flatButtons.clear();
         computePanel();
 
         int barY = this.panelY + this.panelH - MARGIN - BAR_HEIGHT;
         int barX = this.panelX + SIDEBAR_WIDTH + MARGIN;
 
-        // 搜索框（侧边栏顶部，标题栏下方）
-        this.searchBox = new EditBox(this.font, this.panelX + MARGIN,
-                this.panelY + TITLE_BAR_HEIGHT + 6,
-                SIDEBAR_WIDTH - MARGIN * 2, 16, Component.literal("搜索消息..."));
+        // 搜索框（侧边栏顶部，标题栏下方）：收起状态下也保留
+        this.searchBox = new EditBox(this.font, this.panelX + MARGIN + 2,
+                this.searchBoxY(),
+                SIDEBAR_WIDTH - MARGIN * 2 - 4, SEARCH_BOX_HEIGHT, Component.literal("搜索消息..."));
         this.searchBox.setMaxLength(32);
         this.searchBox.setBordered(false);
+        this.searchBox.setHint(Component.literal("搜索消息"));
+        this.searchBox.setValue(this.searchDraft);
         addRenderableWidget(this.searchBox);
+
+        // 右侧面板收起时，输入区和工具栏整个不存在
+        if (this.collapsed) {
+            this.input = null;
+            return;
+        }
 
         // 工具栏：表情
         addFlatButton(barX, barY, 22, BAR_HEIGHT, Component.literal("☺"),
@@ -149,53 +186,73 @@ public class XuanXuChatScreen extends Screen {
         int inputWidth = Math.max(80, this.panelX + this.panelW - MARGIN - 52 - inputX);
         this.input = new EditBox(this.font, inputX, barY, inputWidth, BAR_HEIGHT,
                 Component.literal("输入消息..."));
-        this.input.setValue(this.initialText);
+        this.input.setValue(this.draft);
         this.input.setMaxLength(256);
         this.input.setFocused(true);
         this.input.setBordered(false);
+        this.input.setHint(Component.literal("输入消息..."));
         this.input.setEditable(this.conversationOpen);
         addRenderableWidget(this.input);
         setInitialFocus(this.input);
 
-        // 标题栏右侧：关闭当前会话
+        // 标题栏右侧：收起整个右侧面板（不只是清空当前会话）
         addFlatButton(this.panelX + this.panelW - MARGIN - 18, this.panelY + 3, 18, 16,
                 Component.literal("×"),
-                () -> {
-                    this.conversationOpen = false;
-                    if (this.input != null) {
-                        this.input.setEditable(false);
-                    }
-                });
+                this::collapseRightPanel);
 
         // 发送按钮
         addFlatButton(this.panelX + this.panelW - MARGIN - 48, barY, 48, BAR_HEIGHT,
                 Component.literal("发送"),
                 () -> sendMessage(this.input.getValue()));
+    }
 
-        // 主题切换（侧边栏底部）
-        addFlatButton(this.panelX + MARGIN, barY, 44, BAR_HEIGHT,
-                Component.literal(this.theme.dark() ? "浅色" : "深色"),
-                () -> {
-                    String draft = this.input != null ? this.input.getValue() : "";
-                    this.theme = this.theme.toggle();
-                    this.rebuildWidgets();
-                    if (this.input != null) {
-                        this.input.setValue(draft);
-                        this.input.setFocused(true);
-                    }
-                });
+    /** 记住输入框 / 搜索框内容，供重建控件后恢复。 */
+    private void rememberInputState() {        if (this.input != null) {
+            this.draft = this.input.getValue();
+        }
+        if (this.searchBox != null) {
+            this.searchDraft = this.searchBox.getValue();
+        }
+    }
+
+    /** 收起右侧面板：只剩会话列表，点任意会话重新展开。 */
+    private void collapseRightPanel() {
+        if (this.collapsed) {
+            return;
+        }
+        rememberInputState();
+        this.collapsed = true;
+        this.conversationOpen = false;
+        this.emojiOpen = false;
+        this.atQuery = null;
+        this.messageMenuTarget = null;
+        this.headMenuPlayer = null;
+        this.rebuildWidgets();
+        showHint("点击会话展开");
     }
 
     /** 计算固定面板区域：固定在屏幕左侧，大小适中。 */
     private void computePanel() {
-        this.panelW = (int) Math.max(480, Math.min(760, this.width * 0.46));
+        // 收起状态：面板只剩会话列表那么宽
+        this.panelW = this.collapsed
+                ? SIDEBAR_WIDTH + MARGIN
+                : (int) Math.max(480, Math.min(760, this.width * 0.46));
         this.panelH = (int) Math.min(this.height - 20, Math.max(380, this.height * 0.88));
         this.panelX = 8;
         this.panelY = (this.height - this.panelH) / 2;
     }
 
-    private List<PlayerInfo> collectOnlinePlayers() {
-        Minecraft mc = Minecraft.getInstance();
+    /** 侧边栏搜索框的 y 坐标。 */
+    private int searchBoxY() {
+        return this.panelY + TITLE_BAR_HEIGHT + MARGIN + SEARCH_BOX_TOP_OFFSET;
+    }
+
+    /** 会话条目的起始 y：渲染与点击判定共用同一个值，避免 UI 与热区错位。 */
+    private int sidebarItemsTop() {
+        return searchBoxY() + SEARCH_BOX_HEIGHT + MARGIN;
+    }
+
+    private List<PlayerInfo> collectOnlinePlayers() {        Minecraft mc = Minecraft.getInstance();
         if (mc.getConnection() == null) {
             return List.of();
         }
@@ -206,12 +263,9 @@ public class XuanXuChatScreen extends Screen {
 
     @Override
     public void render(GuiGraphics guiGraphics, int mouseX, int mouseY, float partialTick) {
-        ChatHub.setOpenConversation(this.conversation);
-        int messageCount = ChatHub.messages(this.conversation).size();
-        if (messageCount != this.lastSeenMessageCount) {
-            this.lastSeenMessageCount = messageCount;
-            this.scroll = 0;
-        }
+        ChatHub.setOpenConversation(this.conversationOpen && !this.collapsed ? this.conversation : null);
+        // scroll 是「距底部的高度」：新消息只会在底部追加，
+        // 不重置它，正在翻看历史的人就不会被拽回底部。
         updateAtQuery();
 
         // 屏幕暗化 + 面板背景
@@ -221,19 +275,23 @@ public class XuanXuChatScreen extends Screen {
 
         renderTitleBar(guiGraphics);
         renderSidebar(guiGraphics, mouseX, mouseY);
-        renderMessages(guiGraphics, mouseX, mouseY);
-        renderInputBar(guiGraphics);
+        if (!this.collapsed) {
+            renderMessages(guiGraphics, mouseX, mouseY);
+            renderInputBar(guiGraphics);
+        }
         renderFlatButtons(guiGraphics, mouseX, mouseY);
 
         for (var renderable : this.renderables) {
             renderable.render(guiGraphics, mouseX, mouseY, partialTick);
         }
 
-        if (this.emojiOpen) {
-            renderEmojiPanel(guiGraphics, mouseX, mouseY);
-        }
-        if (this.atQuery != null && !this.atQuery.isEmpty()) {
-            renderAtPopup(guiGraphics, mouseX, mouseY);
+        if (!this.collapsed) {
+            if (this.emojiOpen) {
+                renderEmojiPanel(guiGraphics, mouseX, mouseY);
+            }
+            if (this.atQuery != null && !this.atQuery.isEmpty()) {
+                renderAtPopup(guiGraphics, mouseX, mouseY);
+            }
         }
         if (this.headMenuPlayer != null) {
             renderHeadMenu(guiGraphics, mouseX, mouseY);
@@ -272,9 +330,19 @@ public class XuanXuChatScreen extends Screen {
         int left = this.panelX;
         int top = this.panelY + TITLE_BAR_HEIGHT;
         guiGraphics.fill(left, top, left + SIDEBAR_WIDTH, this.panelY + this.panelH, this.theme.panel());
+
+        // 标题
         guiGraphics.drawString(this.font, "会话", left + MARGIN, top + MARGIN, this.theme.accent());
 
-        int y = top + MARGIN + 34;
+        // 搜索框底板（位于「会话」标题和列表之间，收起状态下同样显示）
+        if (this.searchBox != null) {
+            int bx = left + MARGIN;
+            int by = searchBoxY();
+            guiGraphics.fill(bx, by, bx + SIDEBAR_WIDTH - MARGIN * 2, by + SEARCH_BOX_HEIGHT,
+                    this.theme.inputBg());
+        }
+
+        int y = sidebarItemsTop();
 
         boolean publicSelected = ChatHub.PUBLIC.equals(this.conversation);
         if (publicSelected) {
@@ -453,8 +521,18 @@ public class XuanXuChatScreen extends Screen {
             return LINE + 2 + (EMOJI_SIZE + BUBBLE_PAD * 2) + 8;
         }
         int maxWidth = Math.max(40, areaW - AVATAR - 40);
-        int lines = this.font.split(message.content(), maxWidth).size();
-        int bubbleHeight = lines * LINE + BUBBLE_PAD * 2;
+        int bubbleHeight;
+        List<MessageLine> mixed = hasInlineEmoji(message) ? layoutMixed(message.plainText(), maxWidth) : null;
+        if (mixed != null) {
+            // 混排：每行高度可能不同（含表情的行更高）
+            bubbleHeight = 0;
+            for (MessageLine line : mixed) {
+                bubbleHeight += line.height();
+            }
+            bubbleHeight += BUBBLE_PAD * 2;
+        } else {
+            bubbleHeight = this.font.split(message.content(), maxWidth).size() * LINE + BUBBLE_PAD * 2;
+        }
         int height = LINE + 2 + bubbleHeight + 8;
         if (findImageUrl(message.plainText()) != null) {
             height += imageDisplayHeight(message.plainText()) + 6;
@@ -496,11 +574,24 @@ public class XuanXuChatScreen extends Screen {
 
         // 纯表情消息：气泡按表情尺寸绘制（避免表情超出气泡）
         boolean emojiMessage = isEmojiMessage(message);
+        // 文本 + 表情混排（如「你好:smile:」）：走自己算的行布局
+        List<MessageLine> mixed = !emojiMessage && hasInlineEmoji(message)
+                ? layoutMixed(message.plainText(), maxWidth)
+                : null;
         int bubbleWidth;
         int bubbleHeight;
         if (emojiMessage) {
             bubbleWidth = EMOJI_SIZE + BUBBLE_PAD * 2;
             bubbleHeight = EMOJI_SIZE + BUBBLE_PAD * 2;
+        } else if (mixed != null) {
+            bubbleWidth = 0;
+            bubbleHeight = 0;
+            for (MessageLine line : mixed) {
+                bubbleWidth = Math.max(bubbleWidth, line.width());
+                bubbleHeight += line.height();
+            }
+            bubbleWidth += BUBBLE_PAD * 2;
+            bubbleHeight += BUBBLE_PAD * 2;
         } else {
             bubbleWidth = 0;
             for (FormattedCharSequence line : lines) {
@@ -516,7 +607,7 @@ public class XuanXuChatScreen extends Screen {
             guiGraphics.drawString(this.font, message.senderName(), bubbleX, nameY, this.theme.accent());
             int bubbleY = nameY + LINE + 2;
             guiGraphics.fill(bubbleX, bubbleY, bubbleX + bubbleWidth, bubbleY + bubbleHeight, this.theme.bubbleSelf());
-            drawBubbleContent(guiGraphics, message, lines, bubbleX + BUBBLE_PAD, bubbleY + BUBBLE_PAD,
+            drawBubbleContent(guiGraphics, message, lines, mixed, bubbleX + BUBBLE_PAD, bubbleY + BUBBLE_PAD,
                     this.theme.bubbleSelfText());
             if (message.repeatCount() > 1) {
                 String badge = "x" + message.repeatCount();
@@ -533,7 +624,8 @@ public class XuanXuChatScreen extends Screen {
             }
             int bubbleY = nameY + LINE + 2;
             guiGraphics.fill(bubbleX, bubbleY, bubbleX + bubbleWidth, bubbleY + bubbleHeight, this.theme.bubbleOthers());
-            drawBubbleContent(guiGraphics, message, lines, bubbleX + BUBBLE_PAD, bubbleY + BUBBLE_PAD, this.theme.textPrimary());
+            drawBubbleContent(guiGraphics, message, lines, mixed, bubbleX + BUBBLE_PAD, bubbleY + BUBBLE_PAD,
+                    this.theme.textPrimary());
             if (message.repeatCount() > 1) {
                 String badge = "x" + message.repeatCount();
                 guiGraphics.drawString(this.font, badge,
@@ -543,9 +635,10 @@ public class XuanXuChatScreen extends Screen {
         }
     }
 
-    /** 绘制气泡文字：自定义表情图片 / 内置黄豆表情 / 普通文字。 */
+    /** 绘制气泡内容：整条表情 / 文本表情混排 / 普通文字。 */
     private void drawBubbleContent(GuiGraphics guiGraphics, ChatMessage message,
-                                   List<FormattedCharSequence> lines, int x, int y, int color) {
+                                   List<FormattedCharSequence> lines, List<MessageLine> mixed,
+                                   int x, int y, int color) {
         String emojiName = customEmojiName(message.plainText());
         if (emojiName != null) {
             ChatEmojiLoader.EmojiEntry entry = ChatEmojiLoader.find(emojiName);
@@ -561,6 +654,26 @@ public class XuanXuChatScreen extends Screen {
                 drawFace(guiGraphics, x, y, EMOJI_SIZE, face);
                 return;
             }
+        }
+        if (mixed != null) {
+            int lineY = y;
+            for (MessageLine line : mixed) {
+                for (Segment segment : line.segments()) {
+                    if (segment.emoji() != null) {
+                        ChatEmojiLoader.EmojiEntry entry = segment.emoji();
+                        guiGraphics.blit(entry.location(), x + segment.x(), lineY, EMOJI_SIZE, EMOJI_SIZE,
+                                0, 0, entry.width(), entry.height(), entry.width(), entry.height());
+                    } else if (segment.face() != null) {
+                        drawFace(guiGraphics, x + segment.x(), lineY, EMOJI_SIZE, segment.face());
+                    } else {
+                        // 文字在含表情的行里垂直居中
+                        int textY = lineY + (line.height() - LINE) / 2;
+                        guiGraphics.drawString(this.font, segment.text(), x + segment.x(), textY, color);
+                    }
+                }
+                lineY += line.height();
+            }
+            return;
         }
         int ty = y;
         for (FormattedCharSequence line : lines) {
@@ -583,6 +696,225 @@ public class XuanXuChatScreen extends Screen {
         return null;
     }
 
+    // ==================== 文本 + 表情混排 ====================
+
+    /** 从 i 开始匹配自定义表情代码 {@code :name:}，返回结束下标（不含）；不匹配返回 -1。 */
+    private int customEmojiEnd(String text, int i) {
+        if (text == null || i >= text.length() || text.charAt(i) != ':') {
+            return -1;
+        }
+        int end = text.indexOf(':', i + 1);
+        if (end < 0 || end - i < 3 || end - i > 34) {
+            return -1;
+        }
+        String name = text.substring(i + 1, end);
+        if (!name.matches("[\\w-]+") || ChatEmojiLoader.find(name) == null) {
+            return -1;
+        }
+        return end + 1;
+    }
+
+    /** 从 i 开始匹配内置黄豆表情，返回对应的 Face；不匹配返回 null。 */
+    private Face faceStartingAt(String text, int i) {
+        for (Face face : Face.values()) {
+            if (text.startsWith(face.emoji, i)) {
+                return face;
+            }
+        }
+        return null;
+    }
+
+    /** 把消息正文切成「文字 / 内置表情 / 自定义表情」三种 token。 */
+    private List<Segment> tokenize(String text) {
+        List<Segment> tokens = new ArrayList<>();
+        if (text == null || text.isEmpty()) {
+            return tokens;
+        }
+        StringBuilder buffer = new StringBuilder();
+        int i = 0;
+        while (i < text.length()) {
+            int customEnd = customEmojiEnd(text, i);
+            if (customEnd > 0) {
+                addTextToken(tokens, buffer);
+                tokens.add(new Segment(null, null, ChatEmojiLoader.find(text.substring(i + 1, customEnd - 1)), 0));
+                i = customEnd;
+                continue;
+            }
+            Face face = faceStartingAt(text, i);
+            if (face != null) {
+                addTextToken(tokens, buffer);
+                tokens.add(new Segment(null, face, null, 0));
+                i += face.emoji.length();
+                continue;
+            }
+            buffer.append(text.charAt(i));
+            i++;
+        }
+        addTextToken(tokens, buffer);
+        return tokens;
+    }
+
+    private void addTextToken(List<Segment> tokens, StringBuilder buffer) {
+        if (buffer.length() > 0) {
+            tokens.add(new Segment(buffer.toString(), null, null, 0));
+            buffer.setLength(0);
+        }
+    }
+
+    /** 消息里是否含有可绘制的行内表情（整条纯表情另由 {@link #isEmojiMessage} 处理）。 */
+    private boolean hasInlineEmoji(ChatMessage message) {
+        String text = message.plainText();
+        if (text == null || text.isEmpty()) {
+            return false;
+        }
+        // 快速预判：没有冒号也没有代理对（emoji 都落在代理区）时不可能有表情
+        boolean possible = false;
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c == ':' || c >= 0xD800) {
+                possible = true;
+                break;
+            }
+        }
+        if (!possible) {
+            return false;
+        }
+        for (Segment token : tokenize(text)) {
+            if (token.face() != null || token.emoji() != null) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 把文本切成最小断行单元：拉丁单词（尾随空格一起）与单个 CJK 字符。 */
+    private List<String> breakUnits(String text) {
+        List<String> units = new ArrayList<>();
+        StringBuilder word = new StringBuilder();
+        int i = 0;
+        while (i < text.length()) {
+            int cp = text.codePointAt(i);
+            int len = Character.charCount(cp);
+            if (cp == ' ' || cp == '\t' || cp == '\u3000') {
+                word.appendCodePoint(cp);
+                units.add(word.toString());
+                word.setLength(0);
+                i += len;
+                continue;
+            }
+            if (word.length() == 0) {
+                word.appendCodePoint(cp);
+            } else {
+                int last = word.codePointBefore(word.length());
+                // 拉丁 / ASCII 连成一个单词，CJK 每字都可断行
+                if (cp < 0x2E80 && last < 0x2E80) {
+                    word.appendCodePoint(cp);
+                } else {
+                    units.add(word.toString());
+                    word.setLength(0);
+                    word.appendCodePoint(cp);
+                }
+            }
+            i += len;
+        }
+        if (word.length() > 0) {
+            units.add(word.toString());
+        }
+        return units;
+    }
+
+    /**
+     * 把消息正文摊平成排布单元：表情各占一个单元，文本按可断行单元切开，
+     * 比一整行还宽的不可断文本（长链接等）按字符硬断，避免撑破气泡。
+     */
+    private List<Segment> flattenUnits(String text, int maxWidth) {
+        List<Segment> units = new ArrayList<>();
+        for (Segment token : tokenize(text)) {
+            if (token.face() != null || token.emoji() != null) {
+                units.add(token);
+                continue;
+            }
+            for (String unit : breakUnits(token.text())) {
+                if (this.font.width(unit) <= maxWidth) {
+                    units.add(new Segment(unit, null, null, 0));
+                    continue;
+                }
+                for (int k = 0; k < unit.length(); ) {
+                    int cp = unit.codePointAt(k);
+                    units.add(new Segment(new String(Character.toChars(cp)), null, null, 0));
+                    k += Character.charCount(cp);
+                }
+            }
+        }
+        return units;
+    }
+
+    /**
+     * 文本 + 表情混排成行。表情按 {@link #EMOJI_SIZE} 占宽，含表情的行更高，
+     * 该行里的文字垂直居中。
+     */
+    private List<MessageLine> layoutMixed(String text, int maxWidth) {
+        List<MessageLine> lines = new ArrayList<>();
+        List<Segment> current = new ArrayList<>();
+        StringBuilder buffer = new StringBuilder();
+        int runX = 0;
+        int cursorX = 0;
+        int lineHeight = LINE;
+
+        for (Segment unit : flattenUnits(text, maxWidth)) {
+            if (unit.face() != null || unit.emoji() != null) {
+                if (buffer.length() > 0) {
+                    current.add(new Segment(buffer.toString(), null, null, runX));
+                    buffer.setLength(0);
+                    runX = cursorX;
+                }
+                if (cursorX > 0 && cursorX + EMOJI_SIZE > maxWidth) {
+                    lines.add(new MessageLine(current, cursorX, lineHeight));
+                    current = new ArrayList<>();
+                    cursorX = 0;
+                    runX = 0;
+                    lineHeight = LINE;
+                }
+                current.add(new Segment(null, unit.face(), unit.emoji(), cursorX));
+                cursorX += EMOJI_SIZE;
+                lineHeight = Math.max(lineHeight, EMOJI_SIZE);
+                runX = cursorX;
+                continue;
+            }
+            String piece = unit.text();
+            int width = this.font.width(piece);
+            if (cursorX > 0 && cursorX + width > maxWidth) {
+                String trimmed = piece.stripLeading();
+                if (trimmed.isEmpty()) {
+                    continue;   // 行尾空白不单独占一行
+                }
+                piece = trimmed;
+                width = this.font.width(piece);
+                if (buffer.length() > 0) {
+                    current.add(new Segment(buffer.toString(), null, null, runX));
+                    buffer.setLength(0);
+                }
+                lines.add(new MessageLine(current, cursorX, lineHeight));
+                current = new ArrayList<>();
+                cursorX = 0;
+                runX = 0;
+                lineHeight = LINE;
+            }
+            if (buffer.length() == 0) {
+                runX = cursorX;
+            }
+            buffer.append(piece);
+            cursorX += width;
+        }
+        if (buffer.length() > 0) {
+            current.add(new Segment(buffer.toString(), null, null, runX));
+        }
+        if (!current.isEmpty()) {
+            lines.add(new MessageLine(current, cursorX, lineHeight));
+        }
+        return lines;
+    }
+
     /** 系统消息头像：灰色方块 + 感叹号。 */
     private void drawSystemAvatar(GuiGraphics guiGraphics, int x, int y) {
         guiGraphics.fill(x, y, x + AVATAR, y + AVATAR, 0xFF4A4A5A);
@@ -600,14 +932,12 @@ public class XuanXuChatScreen extends Screen {
                     this.input.getX() + this.input.getWidth() + 4,
                     this.input.getY() + this.input.getHeight() + 1, this.theme.inputBg());
         }
-        if (this.searchBox != null) {
-            guiGraphics.fill(this.searchBox.getX() - 3, this.searchBox.getY() - 1,
-                    this.searchBox.getX() + this.searchBox.getWidth() + 3,
-                    this.searchBox.getY() + this.searchBox.getHeight() + 1, this.theme.inputBg());
-        }
     }
 
     private void insertClipboardImage() {
+        if (this.input == null) {
+            return;
+        }
         String clip = Minecraft.getInstance().keyboardHandler.getClipboard();
         if (clip != null && clip.matches("(?i)^https?://\\S+$")) {
             this.input.insertText(clip);
@@ -617,96 +947,91 @@ public class XuanXuChatScreen extends Screen {
         }
     }
 
-    // ==================== QQ 黄豆表情 ====================
+    // ==================== 表情面板 ====================
 
-    /**
-     * 表情面板：优先显示用户放在 xuanxuchat/emojis/ 下的自定义表情图片，
-     * 没有自定义表情时显示内置黄豆表情 + 颜文字。
-     */
-    private void renderEmojiPanel(GuiGraphics guiGraphics, int mouseX, int mouseY) {
-        List<ChatEmojiLoader.EmojiEntry> custom = ChatEmojiLoader.emojis();
-        int columns = 4;
-        int slots = custom.isEmpty() ? Face.values().length + KAOMOJI.size() : custom.size();
-        int rows = Math.max(1, (slots + columns - 1) / columns);
-        int panelWidth = columns * EMOJI_CELL + 8;
-        int panelHeight = rows * EMOJI_CELL + 8;
-        int x = this.panelX + SIDEBAR_WIDTH + MARGIN;
+    /** 表情面板的一格：内置黄豆表情 / 自定义表情图片 / 颜文字，三选一。 */
+    private record EmojiSlot(Face face, ChatEmojiLoader.EmojiEntry emoji, String kaomoji) {
+        /** 点这一格要插入输入框的文本。 */
+        private String insertText() {
+            if (face != null) {
+                return face.emoji;
+            }
+            if (emoji != null) {
+                return ":" + emoji.name() + ":";
+            }
+            return kaomoji;
+        }
+    }
+
+    /** 面板格子：内置黄豆表情 + 自定义表情图片 + 颜文字，全部平铺在一起。 */
+    private List<EmojiSlot> emojiSlots() {
+        List<EmojiSlot> slots = new ArrayList<>();
+        for (Face face : Face.values()) {
+            slots.add(new EmojiSlot(face, null, null));
+        }
+        for (ChatEmojiLoader.EmojiEntry entry : ChatEmojiLoader.emojis()) {
+            slots.add(new EmojiSlot(null, entry, null));
+        }
+        for (String kaomoji : KAOMOJI) {
+            slots.add(new EmojiSlot(null, null, kaomoji));
+        }
+        return slots;
+    }
+
+    private int emojiPanelX() {
+        return this.panelX + SIDEBAR_WIDTH + MARGIN;
+    }
+
+    /** 表情面板高度（表情变多时自动长高）。 */
+    private int emojiPanelHeight() {
+        int slots = emojiSlots().size();
+        int rows = Math.max(1, (slots + EMOJI_COLUMNS - 1) / EMOJI_COLUMNS);
+        return rows * EMOJI_CELL + 8;
+    }
+
+    /** 表情面板 y：贴着工具栏往上摆，但不会超出面板顶部。 */
+    private int emojiPanelY(int panelHeight) {
         int y = this.panelY + this.panelH - MARGIN - BAR_HEIGHT - panelHeight - 4;
+        return Math.max(this.panelY + TITLE_BAR_HEIGHT + 2, y);
+    }
+
+    private void renderEmojiPanel(GuiGraphics guiGraphics, int mouseX, int mouseY) {
+        List<EmojiSlot> slots = emojiSlots();
+        int panelWidth = EMOJI_COLUMNS * EMOJI_CELL + 8;
+        int panelHeight = emojiPanelHeight();
+        int x = emojiPanelX();
+        int y = emojiPanelY(panelHeight);
         guiGraphics.fill(x, y, x + panelWidth, y + panelHeight, 0xF0202028);
 
-        if (!custom.isEmpty()) {
-            for (int i = 0; i < custom.size(); i++) {
-                int cx = x + 4 + (i % columns) * EMOJI_CELL;
-                int cy = y + 4 + (i / columns) * EMOJI_CELL;
-                boolean hover = isInside(mouseX, mouseY, cx, cy, EMOJI_CELL - 4, EMOJI_CELL - 4);
-                if (hover) {
-                    guiGraphics.fill(cx, cy, cx + EMOJI_CELL - 4, cy + EMOJI_CELL - 4, 0x40FFFFFF);
-                }
-                ChatEmojiLoader.EmojiEntry entry = custom.get(i);
-                guiGraphics.blit(entry.location(), cx + 2, cy + 2, 24, 24, 0, 0,
+        for (int i = 0; i < slots.size(); i++) {
+            int cx = x + 4 + (i % EMOJI_COLUMNS) * EMOJI_CELL;
+            int cy = y + 4 + (i / EMOJI_COLUMNS) * EMOJI_CELL;
+            if (isInside(mouseX, mouseY, cx, cy, EMOJI_CELL - 4, EMOJI_CELL - 4)) {
+                guiGraphics.fill(cx, cy, cx + EMOJI_CELL - 4, cy + EMOJI_CELL - 4, 0x40FFFFFF);
+            }
+            EmojiSlot slot = slots.get(i);
+            if (slot.emoji() != null) {
+                ChatEmojiLoader.EmojiEntry entry = slot.emoji();
+                guiGraphics.blit(entry.location(), cx + 2, cy + 2, EMOJI_PANEL_SIZE, EMOJI_PANEL_SIZE, 0, 0,
                         entry.width(), entry.height(), entry.width(), entry.height());
+            } else if (slot.face() != null) {
+                drawFace(guiGraphics, cx + 3, cy + 3, EMOJI_CELL - 10, slot.face());
+            } else {
+                guiGraphics.drawString(this.font, slot.kaomoji(), cx + 1, cy + 11, 0xFFFFFFFF);
             }
-            return;
-        }
-
-        Face[] faces = Face.values();
-        for (int i = 0; i < faces.length; i++) {
-            int cx = x + 4 + (i % columns) * EMOJI_CELL;
-            int cy = y + 4 + (i / columns) * EMOJI_CELL;
-            boolean hover = isInside(mouseX, mouseY, cx, cy, EMOJI_CELL - 4, EMOJI_CELL - 4);
-            if (hover) {
-                guiGraphics.fill(cx, cy, cx + EMOJI_CELL - 4, cy + EMOJI_CELL - 4, 0x40FFFFFF);
-            }
-            drawFace(guiGraphics, cx + 3, cy + 3, EMOJI_CELL - 10, faces[i]);
-        }
-        for (int k = 0; k < KAOMOJI.size(); k++) {
-            int index = faces.length + k;
-            int cx = x + 4 + (index % columns) * EMOJI_CELL;
-            int cy = y + 4 + (index / columns) * EMOJI_CELL;
-            boolean hover = isInside(mouseX, mouseY, cx, cy, EMOJI_CELL - 4, EMOJI_CELL - 4);
-            if (hover) {
-                guiGraphics.fill(cx, cy, cx + EMOJI_CELL - 4, cy + EMOJI_CELL - 4, 0x40FFFFFF);
-            }
-            guiGraphics.drawString(this.font, KAOMOJI.get(k), cx + 1, cy + 11, 0xFFFFFFFF);
         }
     }
 
     /** 返回点击到的表情内容，没有则 null。 */
     private String emojiAt(double mouseX, double mouseY) {
-        List<ChatEmojiLoader.EmojiEntry> custom = ChatEmojiLoader.emojis();
-        int columns = 4;
-        int slots = custom.isEmpty() ? Face.values().length + KAOMOJI.size() : custom.size();
-        int rows = Math.max(1, (slots + columns - 1) / columns);
-        int panelWidth = columns * EMOJI_CELL + 8;
-        int panelHeight = rows * EMOJI_CELL + 8;
-        int x = this.panelX + SIDEBAR_WIDTH + MARGIN;
-        int y = this.panelY + this.panelH - MARGIN - BAR_HEIGHT - panelHeight - 4;
-
-        if (!custom.isEmpty()) {
-            for (int i = 0; i < custom.size(); i++) {
-                int cx = x + 4 + (i % columns) * EMOJI_CELL;
-                int cy = y + 4 + (i / columns) * EMOJI_CELL;
-                if (isInside(mouseX, mouseY, cx, cy, EMOJI_CELL - 4, EMOJI_CELL - 4)) {
-                    return ":" + custom.get(i).name() + ":";
-                }
-            }
-            return null;
-        }
-
-        Face[] faces = Face.values();
-        for (int i = 0; i < faces.length; i++) {
-            int cx = x + 4 + (i % columns) * EMOJI_CELL;
-            int cy = y + 4 + (i / columns) * EMOJI_CELL;
+        List<EmojiSlot> slots = emojiSlots();
+        int x = emojiPanelX();
+        int y = emojiPanelY(emojiPanelHeight());
+        for (int i = 0; i < slots.size(); i++) {
+            int cx = x + 4 + (i % EMOJI_COLUMNS) * EMOJI_CELL;
+            int cy = y + 4 + (i / EMOJI_COLUMNS) * EMOJI_CELL;
             if (isInside(mouseX, mouseY, cx, cy, EMOJI_CELL - 4, EMOJI_CELL - 4)) {
-                return faces[i].emoji;
-            }
-        }
-        for (int k = 0; k < KAOMOJI.size(); k++) {
-            int index = faces.length + k;
-            int cx = x + 4 + (index % columns) * EMOJI_CELL;
-            int cy = y + 4 + (index / columns) * EMOJI_CELL;
-            if (isInside(mouseX, mouseY, cx, cy, EMOJI_CELL - 4, EMOJI_CELL - 4)) {
-                return KAOMOJI.get(k);
+                return slots.get(i).insertText();
             }
         }
         return null;
@@ -1145,7 +1470,7 @@ public class XuanXuChatScreen extends Screen {
         String text = this.messageMenuTarget.plainText();
         if (index == 0) {
             Minecraft.getInstance().keyboardHandler.setClipboard(text);
-        } else {
+        } else if (this.input != null) {
             // 引用回复：单行前缀（聊天不允许换行）
             String quote = "> " + text + " ";
             this.input.setValue(quote + this.input.getValue());
@@ -1159,7 +1484,7 @@ public class XuanXuChatScreen extends Screen {
         if (mouseX < left || mouseX > left + SIDEBAR_WIDTH) {
             return -1;
         }
-        int y = this.panelY + TITLE_BAR_HEIGHT + MARGIN + 34;
+        int y = sidebarItemsTop();
         if (isInside(mouseX, mouseY, left, y, SIDEBAR_WIDTH, 18)) {
             return 0;
         }
@@ -1202,12 +1527,20 @@ public class XuanXuChatScreen extends Screen {
             }
         }
         this.conversationOpen = true;
-        if (this.input != null) {
+        this.scroll = 0;
+        // 收起状态下点会话 → 重新展开右侧面板（需要重建控件）
+        boolean wasCollapsed = this.collapsed;
+        this.collapsed = false;
+        ChatHub.setOpenConversation(this.conversation);
+        rememberInputState();
+        if (wasCollapsed) {
+            this.rebuildWidgets();
+            if (this.input != null) {
+                this.input.setFocused(true);
+            }
+        } else if (this.input != null) {
             this.input.setEditable(true);
         }
-        this.scroll = 0;
-        this.lastSeenMessageCount = ChatHub.messages(this.conversation).size();
-        ChatHub.setOpenConversation(this.conversation);
     }
 
     private ChatMessage messageAt(double mouseX, double mouseY) {
@@ -1271,6 +1604,9 @@ public class XuanXuChatScreen extends Screen {
 
     @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
+        if (this.collapsed || !this.conversationOpen) {
+            return super.mouseScrolled(mouseX, mouseY, scrollX, scrollY);
+        }
         int areaH = areaH();
         int total = totalMessagesHeight();
         double max = Math.max(0, total - areaH);
@@ -1296,6 +1632,23 @@ public class XuanXuChatScreen extends Screen {
 
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+        if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
+            this.onClose();
+            return true;
+        }
+        // 右侧已收起：没有输入框，只保留关闭快捷键
+        if (this.input == null) {
+            return super.keyPressed(keyCode, scanCode, modifiers);
+        }
+        // 焦点在搜索框时，回车只用来回到聊天输入框，不要误发消息
+        if (this.searchBox != null && this.searchBox.isFocused()) {
+            if (keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_KP_ENTER) {
+                this.setFocused(this.input);
+                this.input.setFocused(true);
+                return true;
+            }
+            return super.keyPressed(keyCode, scanCode, modifiers);
+        }
         if (keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_KP_ENTER) {
             if ((modifiers & GLFW.GLFW_MOD_SHIFT) != 0) {
                 this.input.insertText(" ");
@@ -1304,18 +1657,10 @@ public class XuanXuChatScreen extends Screen {
             sendMessage(this.input.getValue());
             return true;
         }
-        if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
-            this.onClose();
-            return true;
-        }
         return super.keyPressed(keyCode, scanCode, modifiers);
     }
 
     private void sendMessage(String text) {
-        if (!this.conversationOpen) {
-            showHint("先选择左侧会话再发送消息");
-            return;
-        }
         if (text == null || text.isBlank()) {
             return;
         }
@@ -1326,6 +1671,24 @@ public class XuanXuChatScreen extends Screen {
         }
         Minecraft mc = Minecraft.getInstance();
         if (mc.getConnection() == null) {
+            return;
+        }
+        // 以 / 开头的是命令，必须走命令通道（原版 ChatScreen 的行为）。
+        // 走 sendChat 的话服务端只会把它当成一句普通聊天广播出去，命令并不会执行。
+        if (text.startsWith("/")) {
+            String command = text.substring(1).trim();
+            if (this.input != null) {
+                this.input.setValue("");
+            }
+            if (!command.isEmpty()) {
+                // 公共频道里补一条只自己可见的记录，方便回看发过什么命令
+                ChatHub.receiveSelfCommand(text);
+                mc.getConnection().sendCommand(command);
+            }
+            return;
+        }
+        if (!this.conversationOpen) {
+            showHint("先选择左侧会话再发送消息");
             return;
         }
         boolean publicChannel = ChatHub.PUBLIC.equals(this.conversation);
